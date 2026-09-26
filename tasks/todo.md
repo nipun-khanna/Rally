@@ -458,10 +458,11 @@ private history exported, deployment changed, or live configuration modified.
 - [x] Implement registry and exact approval boundary with tests.
 - [x] Implement structured planning and inert generated-code proposals with tests.
 - [x] Integrate explicit adaptive requests into same-chat routing without stealing existing portal/planner/web behavior.
-- [ ] Verify and document actual capability coverage, commits and live behavior.
+- [x] Verify and document actual capability coverage, commits and live behavior.
 
 ### Adaptive requests review
 
 - Explicit `Rally, build/automate/do/use tools…` requests enter the adaptive planner in allowlisted chats. Portal commands and direct web lookups keep their existing priority. Registered read tools are plan status and the existing budgeted web search. No commitment tool is currently registered, so approval-bound side effects remain a framework, not a live capability.
-- Missing capabilities are durable. An optional second model call drafts Python source as inert, private data for developer review; no generation result is installed or executed. The review endpoint requires the local webhook token and is outside the public portal.
+- Missing capabilities are durable. An optional second model call drafts Python source as inert, private data for developer review; no generation result is installed or executed. The review endpoint requires a separate admin token in a request header and is outside the public portal.
 - Synthetic xAI planner call selected `get_plan_status` successfully. Synthetic xAI code-draft call produced a syntax-valid `pending_review` artifact. Neither test sent an iMessage or used private group context. Full suite: 215 tests passed before final review.
+- One labeled Akshit–Nipun group request entered through BlueBubbles, completed the adaptive `get_plan_status` step and sent a same-chat direct reply (`Rally: {"status": "none"}`). Inbound message was processed, adaptive request status `complete`, outbox `sent`. This verifies the read-only live adaptive route; generated code and commitment tools were not tested in the live chat.
