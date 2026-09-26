@@ -69,6 +69,16 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(self.service.receive(message))
         self.assertEqual(len(self.sent), 1)
 
+    def test_direct_reply_is_not_signed_with_rally_name(self):
+        message = ChatMessage("direct-unsigned", "chat1", "nick", "Hey Rally, what's up?", NOW)
+        self.service.receive(message)
+        self.assertFalse(self.sent[0][1].startswith("Rally:"))
+
+    def test_legacy_queued_reply_is_unsigned_before_delivery(self):
+        self.store.queue_message("chat1", "Rally: legacy reply", "direct_reply", "old-message")
+        self.service.deliver_pending("chat1")
+        self.assertEqual(self.sent, [("chat1", "legacy reply")])
+
     def test_incidental_name_and_ordinary_chat_do_not_prompt_reply(self):
         for number, text in enumerate(("I saw a rally today", "We should ask Rally", "Dinner Friday?")):
             self.assertTrue(self.service.receive(ChatMessage(f"other-{number}", "chat1", "nick", text, NOW)))
@@ -294,6 +304,33 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(calls[0], 2)  # one tool decision and one result-based choice
         self.assertEqual(len(self.sent), 1)
 
+    def test_slow_extraction_in_one_chat_does_not_block_another_chat(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original = self.agent.extract
+
+        def slow_for_first_chat(messages, previous):
+            if any(message.message_id == "slow-chat-one" for message in messages):
+                entered.set()
+                release.wait(timeout=2)
+            return original(messages, previous)
+
+        self.agent.extract = slow_for_first_chat
+        first = threading.Thread(target=self.service.receive, args=(
+            ChatMessage("slow-chat-one", "chat1", "nick", "Rally is this still happening?", NOW),))
+        second = threading.Thread(target=self.service.receive, args=(
+            ChatMessage("fast-chat-two", "chat2", "maya", "Dinner Friday?", NOW),))
+        first.start()
+        self.assertTrue(entered.wait(timeout=1), "first chat never reached the blocked extraction")
+        second.start()
+        try:
+            second.join(timeout=0.5)
+            self.assertFalse(second.is_alive(), "another chat waited behind unrelated extraction")
+        finally:
+            release.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
     def test_demo_trigger_uses_normal_stall_rule(self):
         self.assertFalse(self.service.evaluate("chat1", NOW - timedelta(minutes=2)))
         self.assertTrue(self.service.evaluate("chat1", NOW))
@@ -499,7 +536,7 @@ def test_web_answer_is_sent_once_without_following_extraction(tmp_path):
     message=ChatMessage('web-success','iMessage;+;group','friend','Rally find food nearby',NOW)
     assert service.receive(message)
     assert searched==[(message.text,'neutral')]
-    assert sent==[(message.chat_id,'Rally: Two public options: https://example.com')]
+    assert sent==[(message.chat_id,'Two public options: https://example.com')]
     assert store.is_processed(message.message_id)
     assert not service.receive(message)
     assert len(sent)==1

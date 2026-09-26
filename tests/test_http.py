@@ -56,7 +56,7 @@ class HttpTests(unittest.TestCase):
         url = "/webhooks/bluebubbles?token=secret"
         self.assertEqual(self.client.post(url, json=payload).json(), {"accepted": True})
         self.assertEqual(self.client.post(url, json=payload).json(), {"accepted": False})
-        self.assertEqual(self.sent, [(CHAT, "Rally: Friday dinner is being discussed; no venue is chosen yet.")])
+        self.assertEqual(self.sent, [(CHAT, "Friday dinner is being discussed; no venue is chosen yet.")])
 
     def test_debug_view_requires_token_and_reads_persisted_plan(self):
         self.store.add_message(ChatMessage("source", CHAT, "sarah", "Anything except sushi.", NOW))

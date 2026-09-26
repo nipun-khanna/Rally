@@ -101,7 +101,7 @@ def test_existing_direct_routes_keep_priority_and_adaptive_reply_is_same_chat(tm
     assert service.receive(message)
     assert not service.receive(message)
     assert handler.calls==['m1']
-    assert sent==[('chat-a','Rally: adaptive reply')]
+    assert sent==[('chat-a','adaptive reply')]
 
 
 def test_build_request_with_search_words_still_uses_adaptive_route(tmp_path):
@@ -118,7 +118,7 @@ def test_build_request_with_search_words_still_uses_adaptive_route(tmp_path):
     message=ChatMessage('m1','chat-a','member',
                         'Rally, build a website to search news',datetime.now(timezone.utc))
     assert service.receive(message)
-    assert sent==['Rally: adaptive route']
+    assert sent==['adaptive route']
 
 
 def test_review_route_requires_local_admin_token_and_excludes_public_portal(tmp_path):

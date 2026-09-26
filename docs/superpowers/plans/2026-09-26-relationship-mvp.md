@@ -33,7 +33,11 @@
 
 ## Current execution ownership (user correction)
 
-The user approved the written plan, then assigned dashboard, follow-up detection, calendar integration, and website deployment to external human teammates. `docs/team-ownership.md` governs execution. Tasks 1–3 and dashboard interaction implementation belong to those teammates, not internal coding agents. Root executes existing-runtime reliability and shared integration only, without prebuilding teammate schemas or adapters. Task 4 wiring and Task 5 connected demo wait for their actual interfaces. Earlier file/API suggestions below are proposals for handoff, not authority to duplicate teammate work.
+The user approved this plan for in-session execution and later asked root to build the remaining relationship MVP, superseding the earlier dashboard/follow-up/calendar teammate assignment. Personal relationship intelligence is the product center; group planning is supporting context and actions must remain private and owner-scoped. Root owns Tasks 1–5 and integration.
+
+The user reviewed Sunday's public iMessage bridge and approved keeping Rally's existing BlueBubbles transport while adopting its useful pipeline patterns. Implement per-chat debounce for ordinary planning messages, serialize work per chat, and preserve Rally's durable message-ID/outbox deduplication. Direct calls to Rally must keep a fast reply path. Do not add Photon or switch providers. Sunday's repository has no license, so its implementation is not copied; only independently implemented general patterns are used.
+
+Before any live messaging or personal data read, require explicit private-thread/source configuration and keep tests on synthetic fixtures. The live group archive publisher and project remain separate from private relationship data.
 
 ## Original decomposition (reference only)
 
@@ -144,4 +148,4 @@ Deployment decision (2026-09-26): GitHub Actions → Vercel is deferred; deploy 
 
 ## Current execution status
 
-Written plan approved; execution narrowed by explicit external teammate ownership. Root and subagents handle existing group runtime reliability and read-only integration review. No internal agent implements teammate-owned subsystems. Shared integration follows agreed external interfaces.
+Written plan approved; implementation resumed at the user's direction. Existing relationship reminder records and selected-source rhythm learning are already implemented. Remaining: profile intentions/dashboard, local follow-up candidates and lifecycle, calendar free/busy/availability, versioned reviewed actions, connected synthetic demo, and the approved BlueBubbles pipeline reliability changes. Do not duplicate the existing relationship store, private commands/outbox, BlueBubbles adapter, or group planner.
