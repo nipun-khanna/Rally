@@ -33,9 +33,9 @@ starts a new cycle; snoozing changes its next eligible delivery time. Overdue cy
 do not produce repeated messages every tick. Pause and removal cancel unsent
 reminders. Failure or uncertain delivery is never reported as successful.
 
-Personal reminders require an explicitly selected private destination or explicit
-consent to use the test group. A private destination needs separate transport
-allowlisting; normal direct chats remain ignored until configured.
+Personal reminders require an explicitly selected private destination. A private
+destination needs separate transport allowlisting; normal direct chats remain
+ignored until configured. Group reminder delivery is outside this approved scope.
 
 ## Learning
 
@@ -55,8 +55,11 @@ contact evidence; incoming-only messages, reactions, and Rally output do not.
 At least four distinct contact days produce a median-gap cadence suggestion,
 bounded to 1–90 days. The suggestion includes its sample size and source and
 requires explicit acceptance. Message-derived cadence applies to messaging only.
-Disabling a source stops imports and observation immediately; removing it deletes
-its imported text and derived evidence. Existing manual contact events remain.
+Disabling a source stops imports and observation immediately and excludes its
+stored evidence from active suggestions and reminder calculations; removing it
+also deletes imported text and derived evidence. Existing manual contact events
+remain. Messaging reminders use the latest eligible manual or enabled-source
+contact as their anchor; an updated anchor cancels stale pending reminders.
 
 ## Architecture and verification
 
@@ -65,8 +68,8 @@ from group plan extraction. Reuse SQLite connections and the transport, with a
 dedicated relationship outbox. The existing group outbox feeds public portal
 activity, so personal reminders and acknowledgments must never enter that table.
 Route relationship commands before group storage, extraction, and archive ingestion.
-When a configured personal destination overlaps a group, suppress archiving of
-recognized personal commands and responses. Scope every record and command to a
+Reject group destinations, including groups already eligible for portal imports.
+Scope every record and command to a
 configured owner identity; group membership alone does not confer access.
 
 Persist a unique cycle key for each reminder. Claim pending delivery atomically
@@ -90,5 +93,9 @@ setup supplies the owner's sender identity and an existing private conversation
 GUID. This uses the current iMessage account; a dedicated Rally account remains
 deferred. When that account is both owner and transport, recognize owner commands
 sent from the account while ignoring Rally-prefixed output to prevent loops.
+Its owner identity is the existing canonical `local-imessage-account` value.
+Private here means a direct thread, not a separate bot identity: with the current
+shared account its other recipient also sees reminders. Destination selection must
+identify that recipient before live delivery.
 Validate that the reminder destination is a direct conversation rather than a
 group. Do not invent a destination or enable any learning sources during setup.

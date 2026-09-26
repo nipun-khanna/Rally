@@ -4,7 +4,9 @@
 
 - [x] Inspect current scheduling, persistence, message handling, and archive-disable state.
 - [x] Draft relationship-service design with confirmed contact, learning, reminder cycles, and private data isolation.
-- [ ] Resolve delivery destination and initial learning sources; review the written design.
+- [x] Review written design: private Rally conversation and explicitly selected learning conversations approved.
+- [x] Write implementation plan covering private persistence, commands, learning, setup, and verification.
+- [ ] Review implementation plan and confirm execution approach.
 - [ ] Implement relationship records and confirmed contact events with durable ownership isolation.
 - [ ] Implement setup, status, contact confirmation, cadence changes, snooze, pause, resume, and removal.
 - [ ] Implement reminder scheduling and deduplicated delivery through the selected destination.
