@@ -27,7 +27,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
                demo_mode: bool | None = None, schedule: bool = True,
                tick_seconds: int | None = None, portal_store: PortalStore | None = None,
                history_client: BlueBubblesHistoryClient | None = None,
-               app_url: str | None = None, media_root: str | Path | None = None) -> FastAPI:
+               app_url: str | None = None, media_root: str | Path | None = None,
+               history_enabled: bool = True) -> FastAPI:
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -36,7 +37,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
         demo_mode = settings.demo_mode
         tick_seconds = settings.tick_seconds
         app_url = app_url or settings.app_url
-        if settings.bluebubbles_url and settings.bluebubbles_password:
+        history_enabled = settings.history_enabled
+        if history_enabled and settings.bluebubbles_url and settings.bluebubbles_password:
             history_client = BlueBubblesHistoryClient(settings.bluebubbles_url,
                                                        settings.bluebubbles_password)
         publish_enabled = settings.portal_publish_approved
@@ -45,8 +47,11 @@ def create_app(service=None, *, webhook_token: str | None = None,
     tick_seconds = tick_seconds or 60
     portal_store = portal_store or PortalStore(service.store.path)
     media_root = Path(media_root or service.store.path.parent / "portal_media")
-    importer = HistoryImporter(history_client, portal_store, media_root) if history_client else None
+    importer = HistoryImporter(history_client, portal_store, media_root) if history_client and history_enabled else None
     allowed_chats = service.allowed_chat_ids or frozenset()
+    if not history_enabled:
+        for chat_id in allowed_chats:
+            portal_store.update_settings(chat_id, sections={"history": False, "media": False, "analytics": False})
     if app_url:
         service.portal_handler = lambda message: portal_reply(message, portal_store, app_url)
 
@@ -119,7 +124,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     def webhook(payload: dict, token: str | None = None):
         authorize(token)
         data = payload.get("data")
-        if payload.get("type") == "new-message" and isinstance(data, dict):
+        if history_enabled and payload.get("type") == "new-message" and isinstance(data, dict):
             for chat in data.get("chats") or []:
                 chat_id = chat.get("guid") if isinstance(chat, dict) else None
                 if chat_id and chat_id in allowed_chats:

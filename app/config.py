@@ -43,6 +43,7 @@ class Settings:
     allowed_chat_ids: frozenset[str]
     app_url: str = ""
     portal_publish_approved: bool = False
+    history_enabled: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -92,6 +93,7 @@ class Settings:
                 source.get("RALLY_ALLOWED_CHAT_GUIDS", "").split(",") if chat.strip()),
             app_url=source.get("RALLY_APP_URL", ""),
             portal_publish_approved=source.get("RALLY_PORTAL_PUBLISH_APPROVED", "0") == "1",
+            history_enabled=source.get("RALLY_HISTORY_ENABLED", "1") == "1",
         )
 
 
