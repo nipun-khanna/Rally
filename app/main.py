@@ -55,7 +55,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
                app_url: str | None = None, media_root: str | Path | None = None,
                history_enabled: bool = True, relationship_service=None,
                admin_token: str | None = None, voice_registry=None,
-               voice_model: str | None = None, xai_api_key: str | None = None) -> FastAPI:
+               voice_model: str | None = None, xai_api_key: str | None = None,
+               voice_owner: str | None = None) -> FastAPI:
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -81,13 +82,19 @@ def create_app(service=None, *, webhook_token: str | None = None,
                                                        RelationshipLearner(private_store, private_client))
         xai_api_key = settings.xai_api_key
         voice_model = settings.voice_model
+        voice_owner = settings.voice_owner
         if settings.voice_enabled:
             from app.voice.store import VoiceActionStore
             from app.voice.tools import build_voice_tools
+            voice_bluebubbles_client = (
+                history_client if history_client is not None else
+                BlueBubblesHistoryClient(settings.bluebubbles_url, settings.bluebubbles_password)
+                if settings.bluebubbles_url and settings.bluebubbles_password else None)
             voice_registry = build_voice_tools(
                 settings.voice_owner, relationship_store=relationship_service.store,
                 plan_store=service.store, service=service,
-                action_store=VoiceActionStore(service.store.path))
+                action_store=VoiceActionStore(service.store.path),
+                bluebubbles_client=voice_bluebubbles_client)
     else:
         publish_enabled = False
     tick_seconds = tick_seconds or 60
@@ -236,6 +243,16 @@ def create_app(service=None, *, webhook_token: str | None = None,
     def authorize_admin(candidate: str | None):
         if not admin_token or not candidate or not hmac.compare_digest(candidate, admin_token):
             raise HTTPException(403, 'Admin token required')
+
+    @app.get('/dashboard', response_class=HTMLResponse)
+    def dashboard(token: str | None = None):
+        authorize_admin(token)
+        if relationship_service is None:
+            raise HTTPException(404, 'Relationship dashboard is not enabled')
+        from app.relationships.dashboard_view import build_dashboard_data, render_dashboard
+        owner = voice_owner or 'local-imessage-account'
+        grouped = build_dashboard_data(relationship_service.store, owner)
+        return HTMLResponse(render_dashboard(grouped))
 
     @app.get('/voice', response_class=HTMLResponse)
     def voice_page(token: str | None = None):

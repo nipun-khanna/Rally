@@ -5,10 +5,12 @@ minted by /voice/session. Tool calls are relayed back to /voice/tool, which
 runs with server-side access to private relationship and plan data -- the
 browser itself never touches the database or the long-lived xAI key.
 
-The orb is the control: idle (dim, still) -> listening (blue, driven by mic
-amplitude) -> speaking (violet, driven by output amplitude). A monospace
-activity strip at the bottom logs every tool call and connection event for
-diagnosis; it stays out of the way until expanded.
+Push-to-talk, not voice-activity detection: the orb is the control. Click once
+to start recording (blue), click again to send it and wait (grey, "thinking"),
+then Rally speaks (violet, driven by output amplitude). Nothing auto-interrupts
+Rally mid-sentence -- turn-taking is entirely under the user's control. A
+monospace activity strip at the bottom logs every tool call and connection
+event for diagnosis; it stays out of the way until expanded.
 """
 
 
@@ -59,7 +61,14 @@ body {{
 }}
 .orb-wrap[data-state="idle"] {{ --c1: #34343f; --c2: #1e1e28; }}
 .orb-wrap[data-state="connecting"] {{ --c1: #4a4a58; --c2: #2a2a36; }}
-.orb-wrap[data-state="listening"] {{ --c1: #4f7dff; --c2: #7fa0ff; }}
+.orb-wrap[data-state="ready"] {{ --c1: #34343f; --c2: #1e1e28; }}
+.orb-wrap[data-state="recording"] {{ --c1: #4f7dff; --c2: #7fa0ff; }}
+.orb-wrap[data-state="thinking"] {{ --c1: #6b6b7a; --c2: #3a3a46; }}
+.orb-wrap[data-state="thinking"] .orb {{ animation: think-pulse 1.1s ease-in-out infinite; }}
+@keyframes think-pulse {{
+  0%, 100% {{ box-shadow: 0 0 20px -2px var(--c1); }}
+  50% {{ box-shadow: 0 0 55px -2px var(--c1); }}
+}}
 .orb-wrap[data-state="speaking"] {{ --c1: #b355ff; --c2: #d59bff; }}
 .orb-wrap[data-state="error"] {{ --c1: #ff4d6d; --c2: #ff8a9d; }}
 .caption {{ font-size: 14px; color: var(--ink-dim); min-height: 20px; text-align: center; }}
@@ -98,8 +107,8 @@ body {{
   <div class="orb-wrap" id="orbWrap" data-state="idle">
     <div class="orb" id="orb"></div>
   </div>
-  <div class="caption" id="caption">Tap to start</div>
-  <div class="hint" id="hint">Click the orb, then talk. Ask "who am I falling behind with?"</div>
+  <div class="caption" id="caption">Tap to connect</div>
+  <div class="hint" id="hint">Tap to start recording, tap again to send. Ask "who am I falling behind with?"</div>
 </div>
 <div class="activity">
   <div class="activity-head" id="activityHead">
@@ -141,7 +150,7 @@ let state = 'idle';
 function setState(next, caption) {{
   state = next;
   orbWrap.dataset.state = next;
-  dotEl.classList.toggle('live', next === 'listening' || next === 'speaking');
+  dotEl.classList.toggle('live', next === 'recording' || next === 'thinking' || next === 'speaking');
   if (caption !== undefined) captionEl.textContent = caption;
 }}
 
@@ -150,13 +159,12 @@ let audioCtx = null;
 let micStream = null;
 let playHead = 0;
 let micLevel = 0, outLevel = 0;
-let speakingTimer = null;
 
 function frame() {{
   micLevel *= 0.85;
   outLevel *= 0.85;
-  const level = state === 'speaking' ? outLevel : (state === 'listening' ? micLevel : 0);
-  const breathing = (state === 'listening' || state === 'speaking')
+  const level = state === 'speaking' ? outLevel : (state === 'recording' ? micLevel : 0);
+  const breathing = (state === 'recording' || state === 'speaking' || state === 'thinking')
     ? 0 : 0.02 * Math.sin(Date.now() / 900);
   document.documentElement.style.setProperty('--x', '');
   orbWrap.style.setProperty('--glow', Math.min(1, level * 3.2).toFixed(3));
@@ -236,6 +244,7 @@ async function startMic() {{
   mute.connect(audioCtx.destination);
   processor.onaudioprocess = (e) => {{
     const input = e.inputBuffer.getChannelData(0);
+    if (state !== 'recording') return;
     micLevel = Math.max(micLevel, rms(input));
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     const down = downsampleTo24k(input, audioCtx.sampleRate);
@@ -250,7 +259,17 @@ function stopAll(nextCaption) {{
   if (micStream) micStream.getTracks().forEach(t => t.stop());
   if (audioCtx) audioCtx.close();
   socket = null; micStream = null; audioCtx = null;
-  setState('idle', nextCaption || 'Tap to start');
+  setState('idle', nextCaption || 'Tap to connect');
+}}
+
+function beginRecording() {{
+  setState('recording', 'Recording — tap to send');
+}}
+
+function endRecording() {{
+  setState('thinking', 'Thinking…');
+  socket.send(JSON.stringify({{type: 'input_audio_buffer.commit'}}));
+  socket.send(JSON.stringify({{type: 'response.create'}}));
 }}
 
 async function start() {{
@@ -269,7 +288,7 @@ async function start() {{
                         ['xai-client-secret.' + config.ephemeral_token]);
   socket.addEventListener('open', () => {{
     logLine('sys', 'connected');
-    setState('listening', 'Listening…');
+    setState('ready', 'Tap to start talking');
     socket.send(JSON.stringify({{type: 'session.update', session: config.session}}));
   }});
   socket.addEventListener('close', (event) => {{
@@ -282,11 +301,11 @@ async function start() {{
     try {{ msg = JSON.parse(event.data); }} catch (e) {{ return; }}
     if (msg.type === 'response.output_audio.delta' && msg.delta) {{
       setState('speaking', 'Rally is speaking…');
-      clearTimeout(speakingTimer);
-      speakingTimer = setTimeout(() => {{
-        if (state === 'speaking') setState('listening', 'Listening…');
-      }}, 500);
       playPCM16Base64(msg.delta);
+      return;
+    }}
+    if (msg.type === 'response.done') {{
+      setState('ready', 'Tap to start talking');
       return;
     }}
     if (msg.type === 'response.function_call_arguments.done') {{
@@ -298,6 +317,7 @@ async function start() {{
       socket.send(JSON.stringify({{type: 'conversation.item.create', item: {{
         type: 'function_call_output', call_id: msg.call_id, output: JSON.stringify(result)}}}}));
       socket.send(JSON.stringify({{type: 'response.create'}}));
+      setState('thinking', 'Thinking…');
       return;
     }}
     if (msg.type === 'error') logLine('err', JSON.stringify(msg));
@@ -305,8 +325,13 @@ async function start() {{
 }}
 
 orbWrap.addEventListener('click', () => {{
-  if (socket || state === 'connecting') stopAll();
-  else start().catch(err => {{ logLine('err', String(err)); stopAll('Error — tap to retry'); }});
+  if (state === 'idle') {{
+    start().catch(err => {{ logLine('err', String(err)); stopAll('Error — tap to retry'); }});
+    return;
+  }}
+  if (state === 'ready') {{ beginRecording(); return; }}
+  if (state === 'recording') {{ endRecording(); return; }}
+  // 'connecting', 'thinking', and 'speaking' ignore taps: turns are not interrupted.
 }});
 </script>
 </body></html>"""

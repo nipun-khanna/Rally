@@ -11,6 +11,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from app.relationships.schedule import due_at, eligible
 
 
+CATEGORIES = ('family', 'parent', 'grandparent', 'sibling', 'cousin',
+             'close_friend', 'friend', 'other')
+
+
 def stamp(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError('A time zone is required')
@@ -32,6 +36,7 @@ class RelationshipStore:
                     label_key TEXT NOT NULL, mode TEXT NOT NULL, days INTEGER NOT NULL,
                     created_at TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
                     snooze_until TEXT, generation INTEGER NOT NULL DEFAULT 1,
+                    category TEXT,
                     UNIQUE(owner,label_key));
                 CREATE TABLE IF NOT EXISTS rel_contacts (
                     owner TEXT NOT NULL, event_id TEXT NOT NULL, person_id TEXT NOT NULL,
@@ -57,6 +62,10 @@ class RelationshipStore:
                     eligible INTEGER NOT NULL, scan INTEGER NOT NULL,
                     PRIMARY KEY(owner,chat_id,message_id));
             ''')
+            try:
+                db.execute('ALTER TABLE rel_people ADD COLUMN category TEXT')
+            except sqlite3.OperationalError:
+                pass
             # A prior process may have died after the transport accepted a send.
             if recover:
                 db.execute("UPDATE rel_outbox SET status='uncertain' WHERE status='sending'")
@@ -123,17 +132,32 @@ class RelationshipStore:
     def _cancel(self, db, person_id):
         db.execute("UPDATE rel_outbox SET status='canceled' WHERE person_id=? AND status='pending'", (person_id,))
 
-    def upsert(self, owner: str, label: str, mode: str, days: int, now: datetime):
+    def upsert(self, owner: str, label: str, mode: str, days: int, now: datetime,
+               category: str | None = None):
         self.config(owner)
         label = label.strip()
         if not label or len(label) > 80 or mode not in ('call', 'visit', 'message', 'other') or not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= 90:
             raise ValueError('Use a name, a supported contact mode, and a cadence of 1–90 days')
+        if category is not None and category not in CATEGORIES:
+            raise ValueError('Unsupported relationship category')
         with self.db() as db:
-            db.execute('''INSERT INTO rel_people(id,owner,label,label_key,mode,days,created_at)
-                VALUES(?,?,?,?,?,?,?) ON CONFLICT(owner,label_key) DO UPDATE SET
-                mode=excluded.mode,days=excluded.days,generation=rel_people.generation+1,
-                snooze_until=NULL''', (str(uuid4()), owner, label, label.casefold(), mode, days, stamp(now)))
+            existing = db.execute('SELECT category FROM rel_people WHERE owner=? AND label_key=?',
+                                  (owner, label.casefold())).fetchone()
+            resolved_category = category if category is not None else (existing['category'] if existing else None)
+            db.execute('''INSERT INTO rel_people(id,owner,label,label_key,mode,days,created_at,category)
+                VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(owner,label_key) DO UPDATE SET
+                mode=excluded.mode,days=excluded.days,category=excluded.category,
+                generation=rel_people.generation+1,
+                snooze_until=NULL''', (str(uuid4()), owner, label, label.casefold(), mode, days,
+                                       stamp(now), resolved_category))
             self._cancel(db, self._person(db, owner, label)['id'])
+
+    def set_category(self, owner: str, label: str, category: str):
+        if category not in CATEGORIES:
+            raise ValueError('Unsupported relationship category')
+        with self.db() as db:
+            person = self._person(db, owner, label)
+            db.execute('UPDATE rel_people SET category=? WHERE id=?', (category, person['id']))
 
     def _anchor(self, db, person):
         manual = db.execute('SELECT MAX(at) FROM rel_contacts WHERE owner=? AND person_id=? AND mode=?',
@@ -152,6 +176,28 @@ class RelationshipStore:
             for row in rows:
                 row['last_confirmed_at'] = self._anchor(db, row)
             return rows
+
+    def contact_stats(self, owner: str, label: str) -> dict:
+        """Real message/contact-event frequency for one person; no estimate is invented."""
+        with self.db() as db:
+            person = self._person(db, owner, label)
+            text_rows = db.execute('''SELECT t.at FROM rel_texts t JOIN rel_sources s
+                ON s.owner=t.owner AND s.chat_id=t.chat_id WHERE s.owner=? AND s.person_id=?
+                AND s.enabled=1 AND t.eligible=1 ORDER BY t.at''',
+                (owner, person['id'])).fetchall()
+            event_rows = db.execute('SELECT at FROM rel_contacts WHERE owner=? AND person_id=? ORDER BY at',
+                                    (owner, person['id'])).fetchall()
+        text_dates = [datetime.fromisoformat(r['at']) for r in text_rows]
+        event_dates = [datetime.fromisoformat(r['at']) for r in event_rows]
+        stats = {'label': person['label'], 'category': person['category'], 'mode': person['mode'],
+                 'text_count': len(text_dates), 'confirmed_event_count': len(event_dates),
+                 'last_text_at': text_dates[-1].isoformat() if text_dates else None,
+                 'last_confirmed_event_at': event_dates[-1].isoformat() if event_dates else None,
+                 'texts_per_day_avg': None}
+        if len(text_dates) >= 2:
+            span_days = max(1, (text_dates[-1] - text_dates[0]).days)
+            stats['texts_per_day_avg'] = round(len(text_dates) / span_days, 2)
+        return stats
 
     def confirm(self, owner: str, label: str, mode: str, at: datetime, event_id: str):
         if mode not in ('call', 'visit', 'message', 'other'):

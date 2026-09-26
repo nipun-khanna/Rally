@@ -88,7 +88,7 @@ class ListAttentionTests(VoiceTestBase):
                                              blockers=["no venue chosen"]), NOW)
         result = self.registry.call("list_attention", {})
         self.assertEqual(result["overdue_relationships"],
-                         [{"label": "Mom", "mode": "call", "target_days": 3,
+                         [{"label": "Mom", "mode": "call", "category": None, "target_days": 3,
                            "days_since_contact": None}])
         self.assertEqual(len(result["stalled_plans"]), 1)
         self.assertEqual(result["stalled_plans"][0]["chat_id"], CHAT)
@@ -119,6 +119,33 @@ class SetIntentionTests(VoiceTestBase):
         self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
         result = self.registry.call("set_intention",
                                     {"label": "Mom", "mode": "carrier-pigeon", "days": 7})
+        self.assertFalse(result["ok"])
+
+    def test_set_intention_with_category(self):
+        self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
+        result = self.registry.call("set_intention",
+                                    {"label": "Mom", "mode": "call", "days": 7,
+                                     "category": "parent"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.rel_store.list_relationships(OWNER)[0]["category"], "parent")
+
+    def test_set_intention_rejects_invalid_category(self):
+        self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
+        result = self.registry.call("set_intention",
+                                    {"label": "Mom", "mode": "call", "days": 7,
+                                     "category": "not-a-category"})
+        self.assertFalse(result["ok"])
+
+    def test_set_category_on_existing_relationship(self):
+        self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
+        self.registry.call("set_intention", {"label": "Mom", "mode": "call", "days": 7})
+        result = self.registry.call("set_category", {"label": "Mom", "category": "parent"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.rel_store.list_relationships(OWNER)[0]["category"], "parent")
+
+    def test_set_category_unknown_person(self):
+        self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
+        result = self.registry.call("set_category", {"label": "Nobody", "category": "parent"})
         self.assertFalse(result["ok"])
 
 
@@ -171,6 +198,84 @@ class LinkedConversationTests(VoiceTestBase):
         self.assertEqual(self.evaluated, [CHAT])
         self.registry.call("confirm_action", {"action_id": draft["pending_action_id"]})
         self.assertEqual(self.evaluated, [CHAT])  # second confirm is a no-op, not a replay
+
+
+class FakeBlueBubblesClient:
+    def __init__(self, chats):
+        self._chats = chats
+
+    def fetch_chats(self, limit=50):
+        return self._chats
+
+
+class GroupChatToolsTests(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mktemp(suffix=".sqlite3"))
+        self.store = Store(self.path)
+        self.sent = []
+        self.evaluated = []
+        self.service = RallyService(self.store, agent=None, search_fn=lambda f: [],
+                                    send_fn=lambda chat, text: self.sent.append((chat, text)),
+                                    stall_minutes=30, allowed_chat_ids={CHAT})
+        self.service.evaluate = lambda chat_id, now=None: self.evaluated.append(chat_id) or False
+        self.rel_store = RelationshipStore(self.path)
+        self.actions = VoiceActionStore(self.path)
+        self.bluebubbles = FakeBlueBubblesClient([
+            {"guid": CHAT, "displayName": "JSMP"},
+            {"guid": "iMessage;+;other", "displayName": "Not Allowed"},
+        ])
+        self.registry = build_voice_tools(OWNER, relationship_store=self.rel_store,
+                                          plan_store=self.store, service=self.service,
+                                          action_store=self.actions,
+                                          bluebubbles_client=self.bluebubbles)
+
+    def tearDown(self):
+        if self.path.exists():
+            self.path.unlink()
+
+    def test_list_group_chats_filters_to_allowed(self):
+        result = self.registry.call("list_group_chats", {})
+        self.assertEqual(result["chats"], [{"name": "JSMP"}])
+
+    def test_list_group_chats_without_client_reports_none(self):
+        registry = build_voice_tools(OWNER, relationship_store=self.rel_store,
+                                     plan_store=self.store, service=self.service,
+                                     action_store=self.actions)
+        result = registry.call("list_group_chats", {})
+        self.assertEqual(result["chats"], [])
+        self.assertIn("no group chats", result["note"].lower())
+
+    def test_get_chat_status_resolves_by_name(self):
+        self.store.save_plan(CHAT, PlanFacts(goal="dinner", activity="dinner",
+                                             participants=["a", "b"],
+                                             blockers=["no venue chosen"]), NOW)
+        result = self.registry.call("get_chat_status", {"chat_name": "jsmp"})
+        self.assertTrue(result["linked"])
+        self.assertEqual(result["status"], "BLOCKED")
+
+    def test_get_chat_status_unknown_name_does_not_guess(self):
+        result = self.registry.call("get_chat_status", {"chat_name": "Some Other Group"})
+        self.assertFalse(result["linked"])
+
+    def test_propose_message_to_chat_then_confirm_sends_once(self):
+        draft = self.registry.call("propose_message_to_chat",
+                                   {"chat_name": "JSMP", "text": "Dinner Thursday?"})
+        self.assertTrue(draft["ok"])
+        self.assertEqual(self.sent, [])
+        self.registry.call("confirm_action", {"action_id": draft["pending_action_id"]})
+        self.assertEqual(self.sent, [(CHAT, "Dinner Thursday?")])
+
+    def test_propose_message_to_chat_rejects_unallowed_name(self):
+        result = self.registry.call("propose_message_to_chat",
+                                    {"chat_name": "Not Allowed", "text": "hi"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.sent, [])
+
+    def test_nudge_chat_then_confirm_calls_evaluate_once(self):
+        draft = self.registry.call("nudge_chat", {"chat_name": "JSMP"})
+        self.assertTrue(draft["ok"])
+        self.registry.call("confirm_action", {"action_id": draft["pending_action_id"]})
+        self.assertEqual(self.evaluated, [CHAT])
 
 
 class StubbedCapabilityTests(VoiceTestBase):

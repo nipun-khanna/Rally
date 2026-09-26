@@ -110,6 +110,22 @@ class BlueBubblesHistoryClient:
             part.unlink(missing_ok=True)
             raise HistoryFetchError("BlueBubbles attachment download failed") from None
 
+    def fetch_chats(self, limit: int = 30) -> list[dict[str, Any]]:
+        if not (1 <= limit <= 200):
+            raise ValueError("Invalid chat list limit")
+        url = self._url("/api/v1/chat/query")
+        body_bytes = json.dumps({"limit": limit, "sort": "lastmessage"}).encode()
+        request = Request(url, data=body_bytes, method="POST",
+                          headers={"Content-Type": "application/json"})
+        try:
+            with self._opener(request, timeout=30) as response:
+                body = json.load(response)
+        except (HTTPError, URLError, OSError, UnicodeError, json.JSONDecodeError):
+            raise HistoryFetchError("BlueBubbles chat list request failed") from None
+        if not isinstance(body, dict) or body.get("status") != 200 or not isinstance(body.get("data"), list):
+            raise HistoryFetchError("BlueBubbles returned an invalid chat list")
+        return [item for item in body["data"] if isinstance(item, dict)]
+
     def fetch_contacts(self) -> list[dict[str, Any]]:
         try:
             with self._opener(Request(self._url("/api/v1/contact")), timeout=30) as response:
