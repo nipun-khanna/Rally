@@ -71,6 +71,11 @@
 - User correction: defer the GitHub Actions pipeline and deploy manually as needed.
 - Rule: stop CI implementation when the user changes deployment mode. Document the manual CLI path, identify the existing Vercel project's purpose, and avoid creating an extra project or workflow without a renewed request.
 
+## 2026-09-26 — Lead the README with the product
+
+- User correction: the main README should explain what the app does, not open with a narrow implementation pitch.
+- Rule: introduce the product and its main use cases first; distinguish working functionality from planned work before setup instructions, and keep those claims aligned with the PRD and current task tracker.
+
 ## 2026-09-26 — Explicit imperative Rally commands
 
 - User reported no response to an explicit Rally request. The trigger excluded imperative verbs such as turn, enable, and hide.
