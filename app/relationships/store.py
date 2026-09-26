@@ -243,3 +243,40 @@ class RelationshipStore:
     def deliveries(self, owner: str) -> list[dict]:
         with self.db() as db:
             return [dict(r) for r in db.execute('SELECT * FROM rel_outbox WHERE owner=? ORDER BY rowid', (owner,))]
+
+    def sources(self, owner=None) -> list[dict]:
+        with self.db() as db:
+            return [dict(r) for r in db.execute('SELECT * FROM rel_sources' + (' WHERE owner=?' if owner else ''), (owner,) if owner else ())]
+
+    def add_source(self, owner: str, chat_id: str, label: str):
+        if not chat_id.startswith(('iMessage;-;', 'iMessage;+;')) or not chat_id.split(';')[-1]:
+            raise ValueError('Select an exact iMessage conversation GUID')
+        config = self.config(owner)
+        if chat_id == config['destination']:
+            raise ValueError('The reminder conversation cannot be a learning source')
+        with self.db() as db:
+            person = self._person(db, owner, label)
+            existing = db.execute('SELECT * FROM rel_sources WHERE owner=? AND chat_id=?', (owner, chat_id)).fetchone()
+            if existing:
+                raise ValueError('Source already selected; remove it before changing its relationship')
+            db.execute('INSERT INTO rel_sources(owner,chat_id,person_id) VALUES(?,?,?)', (owner, chat_id, person['id']))
+
+    def set_source(self, owner: str, chat_id: str, action: str):
+        if action not in ('disable', 'enable', 'remove'):
+            raise ValueError('Choose enable, disable, or remove')
+        with self.db() as db:
+            row = db.execute('SELECT * FROM rel_sources WHERE owner=? AND chat_id=?', (owner, chat_id)).fetchone()
+            if row is None:
+                raise ValueError('Source not selected')
+            self._cancel(db, row['person_id'])
+            db.execute('UPDATE rel_people SET generation=generation+1 WHERE id=?', (row['person_id'],))
+            if action == 'remove':
+                db.execute('DELETE FROM rel_texts WHERE owner=? AND chat_id=?', (owner, chat_id))
+                db.execute('DELETE FROM rel_sources WHERE owner=? AND chat_id=?', (owner, chat_id))
+            else:
+                db.execute('UPDATE rel_sources SET enabled=?,revision=revision+1 WHERE owner=? AND chat_id=?',
+                           (int(action == 'enable'), owner, chat_id))
+
+    def begin_rescan(self, owner: str, chat_id: str):
+        with self.db() as db:
+            db.execute("UPDATE rel_sources SET cursor=0,scan=scan+1,coverage='pending',rows_seen=0,revision=revision+1 WHERE owner=? AND chat_id=? AND enabled=1", (owner, chat_id))

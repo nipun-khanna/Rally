@@ -58,6 +58,21 @@ def reply(store, owner: str, text: str, message_id: str, now: datetime, learner=
     command = re.sub(r'^\s*(?:hey\s+)?rally[\s,:!?—-]*', '', text, flags=re.I).strip().rstrip('.!?')
     try:
         config = store.config(owner)
+        match = re.fullmatch(r'(suggest|accept) cadence for (.+)', command, re.I)
+        if match:
+            if learner is None:
+                return 'Local learning is unavailable.'
+            action, label = match.groups()
+            suggestion = learner.suggestion(owner, label)
+            if not suggestion:
+                return 'I need at least four distinct contact days of this contact mode and completed selected-source scans to suggest a rhythm.'
+            if action.lower() == 'accept':
+                person = store.person(owner, label)
+                store.upsert(owner, person['label'], person['mode'], suggestion['days'], now)
+                return f"Accepted {suggestion['days']}-day {person['mode']} reminders for {person['label']}."
+            return (f"Suggested {suggestion['days']}-day {suggestion['mode']} rhythm for {label}, based on "
+                    f"{suggestion['sample_size']} contact days from {suggestion['source']}. "
+                    f"Coverage: {suggestion['coverage']}. Say 'Hey Rally, accept cadence for {label}' to apply it.")
         if re.fullmatch(r'(?:relationship|reminder) status|(?:my )?relationships|help', command, re.I):
             rows = store.list_relationships(owner)
             if not rows:
