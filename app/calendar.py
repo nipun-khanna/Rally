@@ -122,6 +122,57 @@ def _access_token(credentials: CalendarCredentials, opener) -> str:
     return token
 
 
+def get_calendar_busy(
+    credentials: CalendarCredentials,
+    start: datetime,
+    end: datetime,
+    *,
+    opener=urlopen,
+) -> list[tuple[datetime, datetime]]:
+    """Read busy intervals for the single configured owner calendar.
+
+    The OAuth grant must include ``calendar.events.freebusy`` (or an equivalent
+    broader read scope). A missing/error calendar is an error, never free time.
+    """
+    if not all((credentials.client_id, credentials.client_secret,
+                credentials.refresh_token, credentials.calendar_id)):
+        raise CalendarError("Google Calendar is not configured")
+    if (not isinstance(start, datetime) or not isinstance(end, datetime) or
+            start.tzinfo is None or end.tzinfo is None or end <= start):
+        raise CalendarError("Calendar availability window is invalid")
+    token = _access_token(credentials, opener)
+    request = Request(
+        "https://www.googleapis.com/calendar/v3/freeBusy",
+        data=json.dumps({
+            "timeMin": start.astimezone(timezone.utc).isoformat(),
+            "timeMax": end.astimezone(timezone.utc).isoformat(),
+            "timeZone": "UTC",
+            "items": [{"id": credentials.calendar_id}],
+        }).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    payload = _read_json(request, opener)
+    calendars = payload.get("calendars")
+    record = calendars.get(credentials.calendar_id) if isinstance(calendars, dict) else None
+    if not isinstance(record, dict) or record.get("errors"):
+        raise CalendarError("Owner calendar availability could not be confirmed")
+    intervals = record.get("busy")
+    if not isinstance(intervals, list):
+        raise CalendarError("Google Calendar returned invalid availability")
+    result = []
+    try:
+        for item in intervals:
+            busy_start = datetime.fromisoformat(item["start"].replace("Z", "+00:00"))
+            busy_end = datetime.fromisoformat(item["end"].replace("Z", "+00:00"))
+            if busy_start.tzinfo is None or busy_end.tzinfo is None or busy_end <= busy_start:
+                raise ValueError
+            result.append((busy_start.astimezone(timezone.utc), busy_end.astimezone(timezone.utc)))
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise CalendarError("Google Calendar returned invalid availability") from exc
+    return result
+
+
 def _verified_event(response: dict, expected: dict, proposal_id: str) -> CalendarEvent:
     if response.get("status", "confirmed") != "confirmed":
         raise CalendarError("Existing calendar event is not confirmed")

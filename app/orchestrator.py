@@ -1,11 +1,13 @@
 """Connect conversation state, agent decisions, scheduler, and approved actions."""
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as clock_time, timedelta, timezone
 from threading import RLock
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.agent import GrokProviderError
+from app.availability import AvailabilityWindow, choose_slot, looks_like_availability, parse_availability
 from app.bluebubbles import DeliveryUncertainError
 from app.models import ChatMessage, Plan, PlanFacts, Proposal
 from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
@@ -43,11 +45,14 @@ def _failure_diagnostic(exc: Exception) -> tuple[str, str, int | None]:
 class RallyService:
     def __init__(self, store: Store, agent, search_fn, send_fn, stall_minutes: int = 30,
                  extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None,
-                 portal_handler=None, web_answer_fn=None, adaptive_handler=None):
+                 portal_handler=None, web_answer_fn=None, adaptive_handler=None,
+                 availability_fn=None, time_zone: str = "America/New_York"):
         self.store = store
         self.agent = agent
         self.extractor = extractor or agent
         self.calendar_fn = calendar_fn
+        self.availability_fn = availability_fn
+        self.time_zone = time_zone
         self.search_fn = search_fn
         self.send_fn = send_fn
         self.stall_minutes = stall_minutes
@@ -95,6 +100,34 @@ class RallyService:
         if not self.store.add_message(message) and self.store.is_processed(message.message_id):
             return False
         plan = self.store.get_plan(message.chat_id)
+        if (plan and plan.state not in ("READY", "EXECUTING", "DONE", "ABANDONED") and plan.facts.date and
+                self.store.availability_requested(plan.id, plan.version) and
+                looks_like_availability(message.text)):
+            try:
+                target_date = date.fromisoformat(plan.facts.date)
+            except ValueError:
+                target_date = None
+            try:
+                today = datetime.now(ZoneInfo(self.time_zone)).date()
+            except ZoneInfoNotFoundError:
+                today = datetime.now().date()
+            if target_date is not None and target_date < today:
+                target_date = None
+            window = parse_availability(message.text, target_date) if target_date else None
+            if window:
+                self.store.save_availability_report(
+                    plan.id, plan.version, message.sender_id, plan.facts.date,
+                    window.start.isoformat(timespec="minutes"),
+                    window.end.isoformat(timespec="minutes"), message.text, message.sent_at)
+                reply = "Rally: Got it. I’ll use that as your reported availability for this plan; it isn’t a calendar check."
+                kind = "availability_ack"
+            else:
+                reply = ("Rally: I couldn’t match that to the plan date. Please reply with a weekday and a clear range, "
+                         "like ‘free all day Saturday’ or ‘weekdays after 4pm.’")
+                kind = "availability_clarify"
+            self._queue_and_send(message.chat_id, reply, kind, message.message_id)
+            self.store.mark_processed(message.message_id)
+            return True
         if plan and plan.state == "READY" and plan.pending_proposal_id and valid_approval(message.text):
             if valid_calendar_approval(message.text) and self.calendar_fn is None:
                 self._queue_and_send(message.chat_id,
@@ -232,20 +265,42 @@ class RallyService:
         messages = self.store.recent_messages(plan.chat_id)
         decision = self.agent.decide(plan.facts, messages, [])
         facts = plan.facts
+        if facts.date:
+            try:
+                if date.fromisoformat(facts.date) < datetime.now(ZoneInfo(self.time_zone)).date():
+                    self.store.clear_availability(plan.id)
+                    self._queue_and_send(plan.chat_id,
+                        "Rally: That plan date has passed. What new date should I use before collecting availability again?",
+                        "ask", plan.id)
+                    self.store.mark_intervened(plan.id, plan.version, now)
+                    return
+            except (ValueError, ZoneInfoNotFoundError):
+                pass
+        has_reports = bool(facts.date and self.store.availability_reports(
+            plan.id, plan.version, facts.date))
         if decision.confidence < 0.6 or decision.action == "WAIT":
             self.store.mark_intervened(plan.id, plan.version, now)
             return
-        if decision.action == "ASK" or not facts.location or not facts.date:
+        if ((decision.action == "ASK" and not (facts.location and facts.date and
+                                                (facts.time or has_reports))) or
+                not facts.location or not facts.date):
             if not facts.location:
                 question = f"Which city or area should I use for {facts.goal or facts.activity}?"
             elif not facts.date:
                 question = f"Which date works for {facts.goal or facts.activity}?"
+            elif not facts.time:
+                self._request_group_availability(plan, now)
+                self.store.mark_intervened(plan.id, plan.version, now)
+                return
             else:
                 question = f"Could you clarify {facts.blockers[0]}?" if facts.blockers else "What detail should I use?"
             self._queue_and_send(plan.chat_id, f"Rally: {question}", "ask", plan.id)
             self.store.mark_intervened(plan.id, plan.version, now)
             return
-        if decision.action not in ("PROPOSE", "NUDGE") or decision.tool != "search_places":
+        availability_ready = bool(not facts.time and has_reports)
+        if ((decision.action not in ("PROPOSE", "NUDGE") and
+             not (decision.action == "ASK" and availability_ready)) or
+                (decision.action in ("PROPOSE", "NUDGE") and decision.tool != "search_places")):
             self.store.mark_intervened(plan.id, plan.version, now)
             return
         try:
@@ -287,27 +342,141 @@ class RallyService:
             self._queue_and_send(plan.chat_id, "Rally: I found options, but need another preference before suggesting one. What cuisine works?", "ask", plan.id)
             self.store.mark_intervened(plan.id, plan.version, now)
             return
-        time = self._proposal_time(facts)
-        if not time:
-            self._queue_and_send(plan.chat_id, "Rally: What time works for everyone?", "ask", plan.id)
+        # Preserve the legacy earliest-time heuristic only when calendar
+        # availability is disabled. With Calendar connected, intersect reports
+        # with the owner's actual free/busy result.
+        proposed_time = (facts.time if self.availability_fn is not None
+                         else self._proposal_time(facts))
+        reports = []
+        owner_busy = None
+        if not proposed_time:
+            reports = self.store.availability_reports(plan.id, plan.version, facts.date)
+            if not reports:
+                self._request_group_availability(plan, now)
+                self.store.mark_intervened(plan.id, plan.version, now)
+                return
+            expected_reports = facts.party_size or len(set(facts.participants))
+            missing_reports = max(0, expected_reports - len(reports))
+            if missing_reports:
+                people = "person" if missing_reports == 1 else "people"
+                self._queue_and_send(plan.chat_id,
+                    f"Rally: I have availability from {len(reports)} participant(s). Waiting for {missing_reports} more {people} to share a clear range before I suggest a time.",
+                    "availability_wait", plan.id)
+                self.store.mark_intervened(plan.id, plan.version, now)
+                return
+            if self.availability_fn is None:
+                self._queue_and_send(plan.chat_id,
+                    "Rally: I have the availability members shared, but I can’t check the Rally owner’s Google Calendar right now. Please confirm a time or connect the calendar.",
+                    "ask", plan.id)
+                self.store.mark_intervened(plan.id, plan.version, now)
+                return
+            try:
+                busy = self.availability_fn(facts.date, self.time_zone)
+            except Exception:
+                self._queue_and_send(plan.chat_id,
+                    "Rally: I couldn’t check the Rally owner’s calendar, so I can’t suggest a shared time yet.",
+                    "error", plan.id)
+                self.store.mark_intervened(plan.id, plan.version, now)
+                return
+            owner_busy = busy
+            windows = [AvailabilityWindow(clock_time.fromisoformat(row["start_time"]),
+                                          clock_time.fromisoformat(row["end_time"]), row["source_text"])
+                       for row in reports]
+            try:
+                not_before = None
+                if facts.earliest_time:
+                    raw_earliest = clock_time.fromisoformat(facts.earliest_time)
+                    not_before = (datetime.combine(date.min, raw_earliest) +
+                                  timedelta(hours=1)).time()
+                proposed_time = choose_slot(date.fromisoformat(facts.date), windows, busy,
+                                            self.time_zone, not_before=not_before)
+            except ValueError:
+                proposed_time = None
+            if not proposed_time:
+                self._queue_and_send(plan.chat_id,
+                    f"Rally: I couldn’t find a two-hour slot that fits the availability shared so far and the owner’s calendar. Could someone suggest another clear range for {facts.date}, or say ‘change the plan to Saturday’ if another date is better?",
+                    "ask", plan.id)
+                self.store.mark_intervened(plan.id, plan.version, now)
+                return
+        elif self.availability_fn is not None:
+            try:
+                owner_busy = self.availability_fn(facts.date, self.time_zone)
+            except Exception:
+                self._queue_and_send(plan.chat_id,
+                    "Rally: I couldn’t check the Rally owner’s calendar, so I can’t confirm that time.",
+                    "error", plan.id)
+                self.store.mark_intervened(plan.id, plan.version, now)
+                return
+        if reports and not self._time_fits_reports(proposed_time, reports):
+            self._queue_and_send(plan.chat_id,
+                "Rally: That time doesn’t fit the availability reported so far. Could someone suggest another range?",
+                "ask", plan.id)
+            self.store.mark_intervened(plan.id, plan.version, now)
+            return
+        if owner_busy is not None and not self._owner_time_is_free(facts.date, proposed_time, owner_busy):
+            self._queue_and_send(plan.chat_id,
+                "Rally: That time conflicts with the Rally owner’s Google Calendar. Could someone suggest another time?",
+                "ask", plan.id)
             self.store.mark_intervened(plan.id, plan.version, now)
             return
         proposal = Proposal(str(uuid4()), plan.id, plan.version, venue.id, venue.name,
-                            venue.address, facts.date, time,
+                            venue.address, facts.date, proposed_time,
                             facts.party_size or len(set(facts.participants)),
                             created_at=now.isoformat())
         self.store.save_proposal(proposal)
-        display_time = self._display_time(time)
+        display_time = self._display_time(proposed_time)
         attribution = (" Venue data: Geoapify (https://www.geoapify.com/), "
                        "© OpenStreetMap contributors (https://www.openstreetmap.org/copyright)."
                        if venue.source == "geoapify" else " Demo venue data.")
         approval_prompt = (" Reply 'Book it' for the demo reservation, or 'Book it and add a calendar event' for both."
                            if self.calendar_fn else " Reply 'Book it' for the demo reservation.")
+        availability_note = (" This time fits the availability members reported and the Rally owner’s Google Calendar; other calendars weren’t checked."
+                             if reports else "")
         text = (f"Rally: {facts.goal or facts.activity} could work at {venue.name}, "
                 f"{venue.address}, on {facts.date} at {display_time} for {proposal.party_size}. "
-                f"{approval_prompt.strip()}{attribution}")
+                f"{approval_prompt.strip()}{availability_note}{attribution}")
         self._queue_and_send(plan.chat_id, text, "proposal", proposal.id)
         self.store.mark_intervened(plan.id, plan.version, now)
+
+    def _request_group_availability(self, plan: Plan, now: datetime):
+        if self.availability_fn is None:
+            detail = (f"Could you clarify {plan.facts.blockers[0]}?"
+                      if plan.facts.blockers and "availability" in plan.facts.blockers[0].lower()
+                      else "What time works for everyone?")
+            self._queue_and_send(plan.chat_id, f"Rally: {detail}",
+                                 "ask", plan.id)
+            return
+        if self.store.request_availability(plan.id, plan.version, now):
+            text = (f"Rally: When are you generally free on {plan.facts.date}? Please share a clear range, "
+                    "like ‘free all day Saturday’ or ‘weekdays after 4pm.’ I’ll use replies as self-reported availability and check only the Rally owner’s Google Calendar.")
+            self._queue_and_send(plan.chat_id, text, "availability_request", plan.id)
+
+    @staticmethod
+    def _time_fits_reports(value: str, reports) -> bool:
+        try:
+            start = clock_time.fromisoformat(value)
+            end_dt = datetime.combine(date.min, start) + timedelta(hours=2)
+            end = end_dt.time()
+            return all(start >= clock_time.fromisoformat(row["start_time"]) and
+                       end <= clock_time.fromisoformat(row["end_time"]) for row in reports)
+        except (ValueError, TypeError):
+            return False
+
+    def _owner_time_is_free(self, day: str, value: str, busy) -> bool:
+        try:
+            local_date = date.fromisoformat(day)
+            zone = ZoneInfo(self.time_zone)
+            local_time = clock_time.fromisoformat(value)
+            start_naive = datetime.combine(local_date, local_time)
+            early = start_naive.replace(tzinfo=zone, fold=0)
+            late = start_naive.replace(tzinfo=zone, fold=1)
+            if early.utcoffset() != late.utcoffset():
+                return False
+            start = early.astimezone(timezone.utc)
+            end = (start + timedelta(hours=2))
+            return not any(start < busy_end and end > busy_start for busy_start, busy_end in busy)
+        except (ValueError, ZoneInfoNotFoundError, TypeError):
+            return False
 
     @staticmethod
     def _proposal_time(facts: PlanFacts) -> str | None:
@@ -349,6 +518,10 @@ class RallyService:
             result = self.store.calendar_result(proposal.id)
             if result is None:
                 try:
+                    if self.availability_fn is not None:
+                        busy = self.availability_fn(proposal.date, self.time_zone)
+                        if not self._owner_time_is_free(proposal.date, proposal.time, busy):
+                            raise RuntimeError("Owner calendar is no longer free")
                     event = self.calendar_fn(proposal, approval["message_id"],
                                              reservation.confirmation_id)
                     self.store.save_calendar_result(proposal.id, "confirmed", event.event_id, None)

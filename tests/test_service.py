@@ -113,6 +113,51 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.store.reservation(pending), confirmation)
         self.assertEqual(self.agent.previous_results[-1][0]["venues"][0]["id"], "v1")
 
+    def test_reported_group_availability_combines_with_owner_calendar(self):
+        facts = PlanFacts(goal="Friday dinner", activity="dinner", participants=["A", "B"],
+                          date="2026-10-02", location="Midtown, New York",
+                          blockers=["time and venue"], confidence=0.9)
+        self.agent.facts = facts
+        plan = self.store.save_plan("chat1", facts, NOW - timedelta(minutes=31))
+        service = RallyService(self.store, self.agent, lambda _: [VENUE],
+            lambda chat_id, text: self.sent.append((chat_id, text)), stall_minutes=30,
+            availability_fn=lambda day, zone: [], time_zone="America/New_York")
+
+        service.tick(NOW)
+        self.assertIn("When are you generally free", self.sent[-1][1])
+        self.assertIn("self-reported availability", self.sent[-1][1])
+        service.receive(ChatMessage("availability-1", "chat1", "sarah",
+                                    "I'm free all day Friday", NOW + timedelta(minutes=1)))
+        service.receive(ChatMessage("availability-2", "chat1", "alex",
+                                    "I'm free all day Friday", NOW + timedelta(minutes=1)))
+        rows = self.store.availability_reports(plan.id, plan.version, facts.date)
+        self.assertEqual(len(rows), 2)
+        service.tick(NOW + timedelta(minutes=2))
+        proposal = self.store.get_proposal(self.store.get_plan("chat1").pending_proposal_id)
+        self.assertEqual(proposal.time, "09:00")
+        self.assertIn("availability members reported", self.sent[-1][1])
+        self.assertIn("other calendars weren’t checked", self.sent[-1][1])
+
+    def test_reported_slot_is_rejected_when_owner_calendar_is_busy(self):
+        facts = PlanFacts(goal="Friday dinner", activity="dinner", participants=["A", "B"],
+                          date="2026-10-02", location="Midtown, New York",
+                          blockers=["time and venue"], confidence=0.9)
+        self.agent.facts = facts
+        plan = self.store.save_plan("chat1", facts, NOW - timedelta(minutes=31))
+        service = RallyService(self.store, self.agent, lambda _: [VENUE],
+            lambda chat_id, text: self.sent.append((chat_id, text)), stall_minutes=30,
+            availability_fn=lambda day, zone: [
+                (datetime(2026, 10, 2, 9, tzinfo=timezone.utc),
+                 datetime(2026, 10, 2, 21, tzinfo=timezone.utc))], time_zone="UTC")
+        service.tick(NOW)
+        service.receive(ChatMessage("availability-busy", "chat1", "sarah",
+                                    "I'm free all day Friday", NOW + timedelta(minutes=1)))
+        service.receive(ChatMessage("availability-busy-2", "chat1", "alex",
+                                    "I'm free all day Friday", NOW + timedelta(minutes=1)))
+        service.tick(NOW + timedelta(minutes=2))
+        self.assertIsNone(self.store.get_plan("chat1").pending_proposal_id)
+        self.assertIn("couldn’t find a two-hour slot", self.sent[-1][1])
+
     def test_restricted_service_ignores_other_chats_and_their_queued_work(self):
         restricted = RallyService(self.store, self.agent, lambda facts: [VENUE],
                                   lambda chat_id, text: self.sent.append((chat_id, text)),
@@ -196,6 +241,27 @@ class ServiceTests(unittest.TestCase):
         sent_count = len(self.sent)
         self.service.tick(NOW + timedelta(minutes=1))
         self.assertEqual(len(self.sent), sent_count)
+
+    def test_owner_calendar_is_rechecked_before_event_write(self):
+        exact = PlanFacts(**{**self.facts.__dict__, "time": "20:00"})
+        self.store.save_plan("chat1", exact, NOW - timedelta(minutes=31))
+        checks = []
+        def owner_busy(day, zone):
+            checks.append(day)
+            return ([] if len(checks) == 1 else
+                    [(datetime(2026, 10, 3, 0, tzinfo=timezone.utc),
+                      datetime(2026, 10, 3, 2, tzinfo=timezone.utc))])
+        self.service.availability_fn = owner_busy
+        writes = []
+        self.service.calendar_fn = lambda *args: writes.append(args)
+        self.service.tick(NOW)
+        proposal_id = self.store.get_plan("chat1").pending_proposal_id
+        self.service.receive(ChatMessage("late-calendar-approval", "chat1", "nick",
+                                         "Book it and add a calendar event.", NOW))
+        self.assertEqual(len(checks), 2)
+        self.assertEqual(writes, [])
+        self.assertEqual(self.store.calendar_result(proposal_id)["status"], "unconfirmed")
+        self.assertIn("Calendar event was not confirmed", self.sent[-1][1])
 
     def test_interest_and_cross_chat_approval_do_not_book(self):
         self.service.tick(NOW)

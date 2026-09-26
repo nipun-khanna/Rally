@@ -2,14 +2,14 @@
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
 from typing import Mapping
 
 from app.agent import GrokClient
 from app.bluebubbles import send_message
 from app.calendar import (CalendarApproval, CalendarCredentials, CalendarError,
-                          create_calendar_event)
+                          create_calendar_event, get_calendar_busy)
 from app.muse import MuseExtractor
 from app.orchestrator import RallyService
 from app.places import PlacesError, Venue, geocode_location, search_places
@@ -175,6 +175,7 @@ def build_service(settings: Settings) -> RallyService:
         return send_message(settings.bluebubbles_url, settings.bluebubbles_password, chat_id, text)
 
     calendar_fn = None
+    availability_fn = None
     if settings.calendar_enabled:
         credentials = CalendarCredentials(settings.google_client_id,
                                           settings.google_client_secret,
@@ -188,6 +189,17 @@ def build_service(settings: Settings) -> RallyService:
             return create_calendar_event(
                 proposal, CalendarApproval(proposal.id, approval_message_id, True),
                 credentials, settings.time_zone, confirmation_id)
+
+        def availability_fn(day, time_zone):
+            from zoneinfo import ZoneInfo
+            local_day = datetime.fromisoformat(day).date()
+            zone = ZoneInfo(time_zone)
+            start = datetime.combine(local_day, clock_time.min, zone)
+            end = datetime.combine(local_day + timedelta(days=1), clock_time.min, zone)
+            quota_day = datetime.now(timezone.utc).date().isoformat()
+            if not store.consume_calendar_quota(quota_day, settings.max_calendar_requests):
+                raise CalendarError("Calendar request budget reached")
+            return get_calendar_busy(credentials, start, end)
 
     web_answer_fn = None
     if settings.web_enabled:
@@ -219,4 +231,5 @@ def build_service(settings: Settings) -> RallyService:
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
                         allowed_chat_ids=settings.allowed_chat_ids,
-                        web_answer_fn=web_answer_fn, adaptive_handler=adaptive_handler)
+                        web_answer_fn=web_answer_fn, adaptive_handler=adaptive_handler,
+                        availability_fn=availability_fn, time_zone=settings.time_zone)

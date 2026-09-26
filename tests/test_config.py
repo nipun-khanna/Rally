@@ -67,9 +67,13 @@ class ConfigTests(unittest.TestCase):
             settings = Settings.from_env({"RALLY_DATABASE_PATH": str(Path(tmp) / "r.sqlite3"),
                 "RALLY_CALENDAR_ENABLED": "1", "RALLY_GOOGLE_CLIENT_ID": "client",
                 "RALLY_GOOGLE_CLIENT_SECRET": "secret", "RALLY_GOOGLE_REFRESH_TOKEN": "refresh",
-                "RALLY_GOOGLE_CALENDAR_ID": "primary", "RALLY_MAX_CALENDAR_REQUESTS": "1"})
+                "RALLY_GOOGLE_CALENDAR_ID": "primary", "RALLY_MAX_CALENDAR_REQUESTS": "2"})
             service = build_service(settings)
             self.assertIsNotNone(service.calendar_fn)
+            self.assertIsNotNone(service.availability_fn)
+            with patch("app.config.get_calendar_busy", return_value=[]) as freebusy:
+                self.assertEqual(service.availability_fn("2026-10-02", "America/New_York"), [])
+                freebusy.assert_called_once()
             proposal = Proposal("p1", "plan", 1, "v", "Venue", "Address", "2026-10-02", "20:00", 4)
             with patch("app.config.create_calendar_event",
                        return_value=CalendarEvent("p1", "event", None)) as create:
