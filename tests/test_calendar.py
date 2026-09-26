@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
@@ -9,6 +10,7 @@ from app.calendar import (
     CalendarCredentials,
     CalendarError,
     create_calendar_event,
+    get_calendar_busy,
 )
 from app.models import Proposal
 
@@ -33,6 +35,41 @@ class CalendarTests(unittest.TestCase):
             with self.subTest(approval=approval), self.assertRaises(CalendarError):
                 create_calendar_event(self.proposal, approval, self.credentials,
                                       "America/New_York", "RLY-123", opener=fail)
+
+    def test_freebusy_refreshes_token_and_returns_owner_intervals(self):
+        calls = []
+
+        def opener(request, timeout):
+            calls.append(request)
+            if len(calls) == 1:
+                return io.BytesIO(b'{"access_token":"token"}')
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(request.full_url,
+                             "https://www.googleapis.com/calendar/v3/freeBusy")
+            self.assertEqual(request.get_header("Authorization"), "Bearer token")
+            body = json.loads(request.data)
+            self.assertEqual(body["items"], [{"id": "primary"}])
+            return io.BytesIO(json.dumps({"calendars": {"primary": {"busy": [
+                {"start": "2026-10-02T20:00:00Z", "end": "2026-10-02T21:00:00Z"}
+            ]}}}).encode())
+
+        intervals = get_calendar_busy(
+            self.credentials,
+            datetime.fromisoformat("2026-10-02T00:00:00-04:00"),
+            datetime.fromisoformat("2026-10-03T00:00:00-04:00"), opener=opener)
+        self.assertEqual(len(intervals), 1)
+        self.assertEqual(intervals[0][0].isoformat(), "2026-10-02T20:00:00+00:00")
+
+    def test_freebusy_calendar_error_is_not_treated_as_free(self):
+        def opener(request, timeout):
+            if request.full_url.endswith("/token"):
+                return io.BytesIO(b'{"access_token":"token"}')
+            return io.BytesIO(b'{"calendars":{"primary":{"errors":[{"reason":"notFound"}],"busy":[]}}}')
+
+        with self.assertRaises(CalendarError):
+            get_calendar_busy(self.credentials,
+                datetime.fromisoformat("2026-10-02T00:00:00+00:00"),
+                datetime.fromisoformat("2026-10-03T00:00:00+00:00"), opener=opener)
 
     def test_refreshes_token_and_creates_event_without_attendees(self):
         calls = []

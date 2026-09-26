@@ -48,6 +48,15 @@ class Store:
                     day TEXT PRIMARY KEY, request_count INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS calendar_quota (
                     day TEXT PRIMARY KEY, request_count INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS availability_requests (
+                    plan_id TEXT NOT NULL, plan_version INTEGER NOT NULL,
+                    requested_at TEXT NOT NULL, PRIMARY KEY(plan_id, plan_version));
+                CREATE TABLE IF NOT EXISTS availability_reports (
+                    plan_id TEXT NOT NULL, plan_version INTEGER NOT NULL,
+                    sender_id TEXT NOT NULL, availability_date TEXT NOT NULL,
+                    start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+                    source_text TEXT NOT NULL, received_at TEXT NOT NULL,
+                    PRIMARY KEY(plan_id, plan_version, sender_id));
             """)
             if "processed" not in {row[1] for row in db.execute("PRAGMA table_info(messages)")}:
                 db.execute("ALTER TABLE messages ADD COLUMN processed INTEGER NOT NULL DEFAULT 0")
@@ -221,6 +230,9 @@ class Store:
                     db.execute("""UPDATE outbox SET status='canceled' WHERE kind='proposal'
                         AND ref_id=? AND status IN ('pending','failed')""",
                         (previous.pending_proposal_id,))
+                if changed:
+                    db.execute("DELETE FROM availability_reports WHERE plan_id=?", (plan_id,))
+                    db.execute("DELETE FROM availability_requests WHERE plan_id=?", (plan_id,))
                 db.execute("""UPDATE plans SET version=?, facts=?, state=?, last_human_at=?,
                     pending_proposal_id=? WHERE id=?""",
                     (version, payload, state, activity_at.isoformat(), pending, plan_id))
@@ -246,6 +258,8 @@ class Store:
                         proposal.party_size, proposal.status, proposal.created_at))
             db.execute("UPDATE plans SET pending_proposal_id=?, state='READY' WHERE id=? AND version=?",
                        (proposal.id, proposal.plan_id, proposal.version))
+            db.execute("DELETE FROM availability_reports WHERE plan_id=?", (proposal.plan_id,))
+            db.execute("DELETE FROM availability_requests WHERE plan_id=?", (proposal.plan_id,))
 
     def get_proposal(self, proposal_id: str) -> Proposal | None:
         with self._db() as db:
@@ -311,6 +325,44 @@ class Store:
                 event_id=excluded.event_id, error=excluded.error
                 WHERE calendar_results.status!='confirmed'""",
                 (proposal_id, status, event_id, error))
+
+    def request_availability(self, plan_id: str, plan_version: int, requested_at: datetime) -> bool:
+        with self._db() as db:
+            result = db.execute("INSERT OR IGNORE INTO availability_requests VALUES (?, ?, ?)",
+                                (plan_id, plan_version, requested_at.isoformat()))
+            return result.rowcount == 1
+
+    def availability_requested(self, plan_id: str, plan_version: int) -> bool:
+        with self._db() as db:
+            return db.execute("SELECT 1 FROM availability_requests WHERE plan_id=? AND plan_version=?",
+                              (plan_id, plan_version)).fetchone() is not None
+
+    def save_availability_report(self, plan_id: str, plan_version: int, sender_id: str,
+                                 availability_date: str, start_time: str, end_time: str,
+                                 source_text: str, received_at: datetime):
+        with self._db() as db:
+            db.execute("""INSERT INTO availability_reports VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(plan_id,plan_version,sender_id) DO UPDATE SET
+                availability_date=excluded.availability_date,start_time=excluded.start_time,
+                end_time=excluded.end_time,source_text=excluded.source_text,
+                received_at=excluded.received_at""",
+                (plan_id, plan_version, sender_id, availability_date, start_time,
+                 end_time, source_text[:1000], received_at.isoformat()))
+            db.execute("UPDATE plans SET last_intervention_version=NULL WHERE id=? AND version=?",
+                       (plan_id, plan_version))
+
+    def availability_reports(self, plan_id: str, plan_version: int,
+                             availability_date: str) -> list[sqlite3.Row]:
+        with self._db() as db:
+            return db.execute("""SELECT * FROM availability_reports
+                WHERE plan_id=? AND plan_version=? AND availability_date=?
+                ORDER BY received_at,sender_id""",
+                (plan_id, plan_version, availability_date)).fetchall()
+
+    def clear_availability(self, plan_id: str):
+        with self._db() as db:
+            db.execute("DELETE FROM availability_reports WHERE plan_id=?", (plan_id,))
+            db.execute("DELETE FROM availability_requests WHERE plan_id=?", (plan_id,))
 
     def queue_message(self, chat_id: str, text: str, kind: str, ref_id: str | None = None) -> str:
         message_id = str(uuid4())
