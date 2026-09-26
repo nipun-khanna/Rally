@@ -79,13 +79,15 @@ Rally: (calls confirm_action) "Sent."
 
 This was built and tested against the real relationship/plan/orchestrator
 code with fakes standing in for the browser and the xAI socket (see
-`tests/test_voice_tools.py`). The following are implemented but have not
-been exercised end-to-end with a live microphone and a live xAI connection,
-because that requires a real browser session:
+`tests/test_voice_tools.py`). Verified live against the real xAI API on
+2026-09-26: `POST /voice/session` successfully minted a real ephemeral
+token (the `value` field in xAI's response) and `POST /voice/tool` executed
+a real `list_attention` call. The following still have not been exercised
+end-to-end with a live microphone and browser WebSocket, because that
+requires an actual browser session:
 
-- The exact ephemeral-token response field name (`value` vs `client_secret`
-  vs `token`) — the code tries all three; xAI's docs don't show a worked
-  example response.
+- The WebSocket connection itself, `session.update`, and the function-call
+  event round-trip over that socket.
 - Audio round-trip quality (resampling to/from 24kHz PCM16 in-browser).
 - Barge-in behavior if you start talking while Rally is still speaking (the
   current page does not cancel in-flight playback on interruption).
