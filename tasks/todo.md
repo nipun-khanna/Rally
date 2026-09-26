@@ -384,3 +384,9 @@ private history exported, deployment changed, or live configuration modified.
 - [x] Full pytest: 157 passed; diff whitespace check clean.
 - [x] Restart service and process original command once: HTTP 200 accepted, BlueBubbles acknowledgement recorded as sent. History remains disabled.
 - Note: synthetic Grok requests succeeded; failures processing other ordinary messages remain a separate unverified issue. Real group-context replay to xAI was rejected by automatic approval review and was not performed.
+
+### Live group latency checks
+
+- User re-enabled group history; restored history/media/analytics sections and restarted service.
+- Two authorized labeled tests sent in the allowlisted group. Page-link reply acknowledged sent at 1.83 seconds; Grok-backed help reply acknowledged sent at 9.78 seconds from send initiation. Input transport acknowledgements 0.83 and 0.74 seconds respectively.
+- Measurements poll SQLite at one-second intervals and confirm provider acknowledgements, not recipient screen/read time. Both original requests were observed via live BlueBubbles webhooks.
