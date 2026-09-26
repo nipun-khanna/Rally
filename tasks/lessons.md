@@ -63,3 +63,8 @@
 
 - User correction: GitHub-to-Vercel deployment is for other developers working on the website.
 - Rule: separate website code previews and production deployment from local chat-data publication; do not propose a Mac runner for frontend collaboration.
+
+## 2026-09-26 — Explicit imperative Rally commands
+
+- User reported no response to an explicit Rally request. The trigger excluded imperative verbs such as turn, enable, and hide.
+- Rule: test actual user command wording through trigger detection and command handling; disabled capabilities must produce a deterministic explanation instead of falling through to model extraction.

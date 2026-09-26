@@ -376,3 +376,11 @@ Browser discovery returned no connected browser, so rendered desktop/mobile visu
 QA remains unverified. Live model extraction, venue search, native iMessage delivery,
 and actual table booking were not tested during this audit. No messages were sent,
 private history exported, deployment changed, or live configuration modified.
+
+### Explicit history-command reply fix
+
+- [x] Trace original request: stored in allowlisted group, trigger rejected `rally turn on history for this group chat`, no reply queued.
+- [x] Reproduce two failing regressions, support imperative triggers and portal visibility synonyms, explain globally disabled history without imports/model calls.
+- [x] Full pytest: 157 passed; diff whitespace check clean.
+- [x] Restart service and process original command once: HTTP 200 accepted, BlueBubbles acknowledgement recorded as sent. History remains disabled.
+- Note: synthetic Grok requests succeeded; failures processing other ordinary messages remain a separate unverified issue. Real group-context replay to xAI was rejected by automatic approval review and was not performed.

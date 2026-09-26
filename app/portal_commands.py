@@ -7,17 +7,20 @@ _SECTION = r"history|messages|media|photos|attachments|analytics|stats|plans|mem
 _ALIASES = {"messages": "history", "photos": "media", "attachments": "media", "stats": "analytics"}
 
 
-def portal_reply(message, portal_store, app_url: str) -> str | None:
+def portal_reply(message, portal_store, app_url: str, *, history_enabled: bool = True) -> str | None:
     """Return a reply for an addressed portal command, or None for normal Rally work."""
     text = message.text.strip()
     if not re.search(r"\b(portal|page|site|history|messages|media|photos|attachments|analytics|stats|plans|members|activity)\b", text, re.I):
         return None
     chat_id = message.chat_id
-    match = re.search(rf"\b(hide|show)\s+(?:the\s+)?({_SECTION})\b", text, re.I)
+    match = re.search(rf"\b(hide|show|turn on|turn off|enable|disable)\s+(?:the\s+)?({_SECTION})\b", text, re.I)
     if match:
         section = _ALIASES.get(match.group(2).lower(), match.group(2).lower())
-        portal_store.update_settings(chat_id, sections={section: match.group(1).lower() == "show"})
-        return f"{section.title()} is now {'shown' if match.group(1).lower() == 'show' else 'hidden'} on our page."
+        visible = match.group(1).lower() in ("show", "turn on", "enable")
+        if visible and section in {"history", "media", "analytics"} and not history_enabled:
+            return "History reading is disabled globally. Enable it in Rally setup before showing history, media, or analytics; this command has not imported messages."
+        portal_store.update_settings(chat_id, sections={section: visible})
+        return f"{section.title()} is now {'shown' if visible else 'hidden'} on our page."
     match = re.search(r"\b(?:name|title|rename)\s+(?:(?:the|our|group)\s+)?(?:portal|page|site)\s+(?:to|as)\s+(.+)$", text, re.I)
     if match:
         title = match.group(1).strip().strip(". ")[:80]

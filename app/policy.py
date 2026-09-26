@@ -53,7 +53,7 @@ def explicitly_addresses_rally(text: str) -> bool:
     return bool(re.match(
         r"(?:can|could|would|will|what|when|where|why|how|who|do|does|did|"
         r"should|please|help|find|suggest|tell|recap|summarize|update|"
-        r"remind|book|plan|give|show|any)\b", rest, re.I))
+        r"remind|book|plan|give|show|hide|turn|enable|disable|set|change|send|open|any)\b", rest, re.I))
 
 
 def valid_calendar_approval(text: str) -> bool:

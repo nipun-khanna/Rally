@@ -62,7 +62,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
         for chat_id in allowed_chats:
             portal_store.update_settings(chat_id, sections={"history": False, "media": False, "analytics": False})
     if app_url:
-        service.portal_handler = lambda message: portal_reply(message, portal_store, app_url)
+        service.portal_handler = lambda message: portal_reply(message, portal_store, app_url, history_enabled=history_enabled)
 
     def personal_chat_ids():
         if not relationship_service:
