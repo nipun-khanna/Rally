@@ -15,7 +15,8 @@ from app.store import Store
 
 class RallyService:
     def __init__(self, store: Store, agent, search_fn, send_fn, stall_minutes: int = 30,
-                 extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None):
+                 extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None,
+                 portal_handler=None):
         self.store = store
         self.agent = agent
         self.extractor = extractor or agent
@@ -24,6 +25,7 @@ class RallyService:
         self.send_fn = send_fn
         self.stall_minutes = stall_minutes
         self.allowed_chat_ids = None if allowed_chat_ids is None else frozenset(allowed_chat_ids)
+        self.portal_handler = portal_handler
         self._lock = RLock()
 
     def _chat_allowed(self, chat_id: str) -> bool:
@@ -70,9 +72,15 @@ class RallyService:
         messages = self.store.recent_messages(message.chat_id)
         if explicitly_addresses_rally(message.text) and not self.store.has_message(
                 "direct_reply", message.message_id):
-            answer = self.agent.answer_direct(message.text, plan.facts if plan else None, messages)
+            portal_answer = self.portal_handler(message) if self.portal_handler else None
+            answer = portal_answer
+            if portal_answer is None:
+                answer = self.agent.answer_direct(message.text, plan.facts if plan else None, messages)
             self._queue_and_send(message.chat_id, f"Rally: {answer}",
                                  "direct_reply", message.message_id)
+            if portal_answer is not None:
+                self.store.mark_processed(message.message_id)
+                return True
         facts = self.extractor.extract(messages, plan.facts if plan else None)
         if facts.activity:
             if not plan or plan.state not in ("DONE", "ABANDONED") or (

@@ -107,6 +107,11 @@ class Store:
             row = db.execute("SELECT * FROM plans WHERE id=?", (plan_id,)).fetchone()
         return self._plan(row) if row else None
 
+    def plans_for_chat(self, chat_id: str) -> list[Plan]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM plans WHERE chat_id=? ORDER BY rowid DESC", (chat_id,)).fetchall()
+        return [self._plan(row) for row in rows]
+
     def active_plans(self) -> list[Plan]:
         with self._db() as db:
             rows = db.execute("SELECT * FROM plans WHERE state NOT IN ('DONE','ABANDONED')").fetchall()
@@ -248,6 +253,13 @@ class Store:
     def pending_messages(self) -> list[sqlite3.Row]:
         with self._db() as db:
             return db.execute("SELECT * FROM outbox WHERE status IN ('pending','failed')").fetchall()
+
+    def actions_for_chat(self, chat_id: str, limit: int = 100) -> list[dict]:
+        with self._db() as db:
+            rows = db.execute("""SELECT kind, text, status FROM outbox
+                WHERE chat_id=? ORDER BY rowid DESC LIMIT ?""",
+                (chat_id, max(1, min(limit, 1000)))).fetchall()
+        return [dict(row) for row in rows]
 
     def sent_message(self, kind: str, ref_id: str) -> bool:
         with self._db() as db:
