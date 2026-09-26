@@ -1,5 +1,15 @@
 # Rally MVP implementation tasks
 
+## Finish remaining functionality — current iMessage account
+
+- [ ] Audit the PRD and existing adapters; preserve completed behavior and identify implementation gaps.
+- [ ] Finish and publish the pending portal analytics change, with its tests and structured commit.
+- [ ] Prepare provider setup and credential validation for live venue search and Google Calendar.
+- [ ] Run the complete live planning loop in the authorized group when venue credentials are available; record timing and outcomes.
+- [ ] Design adaptive requests: registered tools, persistent workflows, missing-capability tracking, explicit approval for commitments, and honest failure reporting.
+- [ ] Implement the reviewed adaptive-request design and verify same-chat routing, durable state, and tool approval boundaries.
+- [ ] Commit and push verified changes; update the hosted portal as needed.
+
 ## Proposed group websites — full history requirement
 
 - [x] Wire a portal for each allowlisted group into the existing FastAPI service at `/{group_id}`.

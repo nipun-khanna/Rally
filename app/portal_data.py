@@ -53,7 +53,9 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
         analytics["Fewest texts"] = labels[counts["by_member"][-1]["sender_id"]]
     if counts["laughs_received"]:
         winner = counts["laughs_received"][0]
-        analytics["Most laughs received"] = labels.get(winner["sender_id"], winner["sender_id"])
+        analytics["Funniest (by laughs)"] = labels.get(winner["sender_id"], winner["sender_id"])
+    else:
+        analytics["Funniest (by laughs)"] = "No laugh reactions yet"
     historical_results = []
     historical_error = None
     if old_plan_query and group["sections"].get("plans", True) and group["sections"].get("history", True):

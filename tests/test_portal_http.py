@@ -63,6 +63,7 @@ class PortalHttpTests(unittest.TestCase):
         self.assertIn("send our page link", page.text)
         self.assertIn("Rally activity", page.text)
         self.assertIn("direct_reply", page.text)
+        self.assertIn("Funniest (by laughs)", page.text)
         self.assertEqual(self.webhook("m2", "Hey Rally, hide media on our page").status_code, 200)
         self.assertFalse(self.portal.group_for_chat(CHAT)["sections"]["media"])
         self.assertEqual(self.webhook("m3", "Hey Rally, show media").status_code, 200)
