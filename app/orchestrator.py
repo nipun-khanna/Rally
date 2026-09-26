@@ -211,7 +211,7 @@ class RallyService:
                        "© OpenStreetMap contributors (https://www.openstreetmap.org/copyright)."
                        if venue.source == "geoapify" else " Demo venue data.")
         approval_prompt = (" Reply 'Book it' for the demo reservation, or 'Book it and add a calendar event' for both."
-                           if self.calendar_fn else " Want me to make a demo reservation?")
+                           if self.calendar_fn else " Reply 'Book it' for the demo reservation.")
         text = (f"Rally: {facts.goal or facts.activity} could work at {venue.name}, "
                 f"{venue.address}, on {facts.date} at {display_time} for {proposal.party_size}. "
                 f"{approval_prompt.strip()}{attribution}")

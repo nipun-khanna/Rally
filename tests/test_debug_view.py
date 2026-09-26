@@ -2,13 +2,25 @@ import unittest
 from datetime import datetime, timezone
 
 from app.debug_view import render_debug_view
-from app.models import Plan, PlanFacts, Proposal, Reservation
+from app.models import ChatMessage, Plan, PlanFacts, Proposal, Reservation
 
 
 NOW = datetime(2026, 9, 25, 18, 0, tzinfo=timezone.utc)
 
 
 class DebugViewTests(unittest.TestCase):
+    def test_evidence_resolves_escaped_source_quotes_only_from_this_chat(self):
+        messages = [
+            ChatMessage("m1", "group-1", "nick", '<b>Dinner Friday?</b>', NOW),
+            ChatMessage("m4", "other-group", "private", "SECRET", NOW),
+        ]
+        page = render_debug_view(self.plan(), None, None, messages=messages)
+        self.assertIn("&lt;b&gt;Dinner Friday?&lt;/b&gt;", page)
+        self.assertIn("nick", page)
+        self.assertIn("Source message unavailable", page)
+        self.assertNotIn("SECRET", page)
+        self.assertNotIn("<b>Dinner Friday?</b>", page)
+
     def plan(self, **overrides):
         facts = PlanFacts(
             goal="Friday dinner", activity="dinner",

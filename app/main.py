@@ -199,7 +199,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
             raise HTTPException(404, "No plan in this chat")
         proposal = service.store.latest_proposal(plan.id)
         reservation = service.store.reservation(proposal.id) if proposal else None
-        return HTMLResponse(render_debug_view(plan, proposal, reservation))
+        return HTMLResponse(render_debug_view(plan, proposal, reservation,
+                                             messages=service.store.recent_messages(chat_id)))
 
     @app.post("/portal/admin/{chat_id}/import")
     def import_history(chat_id: str, token: str | None = None):

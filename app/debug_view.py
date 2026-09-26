@@ -2,7 +2,7 @@
 
 from html import escape
 
-from app.models import Plan, Proposal, Reservation
+from app.models import ChatMessage, Plan, Proposal, Reservation
 
 
 STAGES = ("SPARK", "INTEREST", "ALIGNMENT", "BLOCKED", "READY", "EXECUTING", "DONE")
@@ -27,7 +27,8 @@ def _item(label: str, value: object) -> str:
 
 
 def render_debug_view(plan: Plan, proposal: Proposal | None,
-                      reservation: Reservation | None) -> str:
+                      reservation: Reservation | None, *,
+                      messages: list[ChatMessage] | None = None) -> str:
     """Render only the supplied plan's stored facts and latest outcomes."""
     facts = plan.facts
     title = facts.goal or facts.activity or "Plan in progress"
@@ -73,10 +74,19 @@ def render_debug_view(plan: Plan, proposal: Proposal | None,
     if not signals:
         signals.append("<li class='empty'>No planning signals recorded yet.</li>")
 
-    evidence = "".join(
-        f"<li><span>{_text(signal)}</span><code>{_text(', '.join(map(str, ids)))}</code></li>"
-        for signal, ids in sorted(facts.evidence.items())
-    ) or "<li class='empty'>No message references recorded yet.</li>"
+    sources = {m.message_id: m for m in messages or []
+               if m.chat_id == plan.chat_id and not m.is_from_rally}
+    evidence_items = []
+    for signal, ids in sorted(facts.evidence.items()):
+        quotes = []
+        for message_id in ids:
+            source = sources.get(message_id)
+            quote = (f"<strong>{_text(source.sender_id)}</strong>: {_text(source.text)}"
+                     if source else "Source message unavailable")
+            quotes.append(f"<blockquote>{quote}<br><code>{_text(message_id)}</code></blockquote>")
+        evidence_items.append(f"<li><span>{_text(signal.replace('_', ' '))}</span>"
+                              f"<div>{''.join(quotes)}</div></li>")
+    evidence = "".join(evidence_items) or "<li class='empty'>No message references recorded yet.</li>"
 
     if proposal:
         proposal_view = (
@@ -149,7 +159,8 @@ def render_debug_view(plan: Plan, proposal: Proposal | None,
   .blockers {{ padding-left:1.2rem; margin:.3rem 0; }}
   .blockers li {{ margin:.4rem 0; }}
   .evidence {{ list-style:none; padding:0; margin:.3rem 0 0; }}
-  .evidence li {{ display:flex; justify-content:space-between; gap:1rem; border-bottom:1px solid #e0e7ed; padding:.4rem 0; overflow-wrap:anywhere; }}
+    .evidence li {{ display:grid; grid-template-columns:1fr 2fr; gap:1rem; border-bottom:1px solid #e0e7ed; padding:.4rem 0; overflow-wrap:anywhere; }}
+    blockquote {{ margin:.25rem 0; padding:.4rem .7rem; border-left:3px solid var(--blue); background:var(--white); }}
   code {{ color:var(--muted); font-size:.82rem; overflow-wrap:anywhere; }}
   .venue {{ display:flex; flex-direction:column; gap:.1rem; margin:.3rem 0 1rem; }}
   .venue strong {{ font-size:1.27rem; }}
@@ -159,7 +170,7 @@ def render_debug_view(plan: Plan, proposal: Proposal | None,
   .details dt {{ color:var(--muted); }}
   .details dd {{ margin:0; text-align:right; overflow-wrap:anywhere; }}
   @media (max-width: 760px) {{ main {{ margin-top:2rem; }} .grid {{ grid-template-columns:1fr; gap:2rem; }} .topline {{ flex-direction:column-reverse; gap:.8rem; }} .stages {{ display:grid; grid-template-columns:1fr 1fr; column-gap:1.4rem; }} }}
-  @media (max-width: 480px) {{ .signals {{ grid-template-columns:1fr; }} .head-note {{ font-size:.78rem; }} .evidence li {{ flex-direction:column; gap:0; }} }}
+  @media (max-width: 480px) {{ .signals {{ grid-template-columns:1fr; }} .head-note {{ font-size:.78rem; }} .evidence li {{ grid-template-columns:1fr; gap:0; }} }}
 </style></head><body>
 <header><span class="brand">Rally</span><span class="head-note">Group plan desk</span></header>
 <main>
@@ -172,6 +183,6 @@ def render_debug_view(plan: Plan, proposal: Proposal | None,
     <section class="section"><h2>Current blocker</h2><ul class="blockers">{blockers}</ul></section>
     <section class="section"><h2>Message evidence</h2><ul class="evidence">{evidence}</ul></section>
     <section class="section"><h2>Proposal</h2>{proposal_view}</section>
-    <section class="section"><h2>Latest reservation result</h2>{result_view}</section>
+    <section class="section"><h2>Latest demo reservation result</h2><p class="empty">Simulated booking; no table is reserved with a venue.</p>{result_view}</section>
   </div></div>
 </main></body></html>"""

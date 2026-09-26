@@ -103,6 +103,7 @@ class ServiceTests(unittest.TestCase):
         self.assertIsNotNone(pending)
         self.assertIsNone(self.store.reservation(pending))
         self.assertIn("8:00 PM", self.sent[0][1])
+        self.assertIn("Reply 'Book it'", self.sent[0][1])
         self.assertTrue(self.service.receive(ChatMessage("m6", "chat1", "nick", "Book it.", NOW)))
         confirmation = self.store.reservation(pending)
         self.assertEqual(confirmation.status, "confirmed")

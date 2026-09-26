@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import PlanFacts, Proposal, Reservation
+from app.models import ChatMessage, PlanFacts, Proposal, Reservation
 from app.orchestrator import RallyService
 from app.store import Store
 
@@ -59,8 +59,10 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.sent, [(CHAT, "Rally: Friday dinner is being discussed; no venue is chosen yet.")])
 
     def test_debug_view_requires_token_and_reads_persisted_plan(self):
+        self.store.add_message(ChatMessage("source", CHAT, "sarah", "Anything except sushi.", NOW))
         self.store.save_plan(CHAT, PlanFacts(goal="Friday dinner", activity="dinner",
-            participants=["nick", "sarah"], blockers=["venue missing"], confidence=0.9),
+            participants=["nick", "sarah"], blockers=["venue missing"],
+            evidence={"excluded_cuisines": ["source"]}, confidence=0.9),
             NOW - timedelta(minutes=31))
         self.assertEqual(self.client.get("/debug", params={"chat_id": CHAT}).status_code, 403)
         view = self.client.get("/debug", params={"chat_id": CHAT, "token": "secret"})
@@ -68,6 +70,7 @@ class HttpTests(unittest.TestCase):
         self.assertIn("Friday dinner", view.text)
         self.assertIn("BLOCKED", view.text)
         self.assertIn("venue missing", view.text)
+        self.assertIn("Anything except sushi.", view.text)
 
     def test_debug_view_shows_proposal_and_reservation_result(self):
         plan = self.store.save_plan(CHAT, PlanFacts(goal="Friday dinner", activity="dinner",
