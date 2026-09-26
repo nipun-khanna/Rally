@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.agent import AgentDecision
+from app.agent import AgentDecision, GrokProviderError
 from app.bluebubbles import DeliveryUncertainError
 from app.calendar import CalendarEvent
 from app.models import ChatMessage, PlanFacts
@@ -389,10 +389,41 @@ class ServiceTests(unittest.TestCase):
                 raise RuntimeError("Grok temporarily unavailable")
             return original(facts, messages, previous_results)
         self.agent.decide = flaky
-        with self.assertRaises(RuntimeError):
-            self.service.tick(NOW)
+        self.assertEqual(self.service.tick(NOW), 0)
         self.service.tick(NOW + timedelta(minutes=1))
         self.assertIsNotNone(self.store.get_plan("chat1").pending_proposal_id)
+
+    def test_scheduler_provider_failure_does_not_starve_second_plan(self):
+        second_facts = PlanFacts(**{**self.facts.__dict__, 'goal': 'Other dinner'})
+        self.store.save_plan('chat2', second_facts, NOW - timedelta(minutes=31))
+        original = self.agent.decide
+        def selective(facts, messages, previous_results=None):
+            if facts.goal == self.facts.goal:
+                raise GrokProviderError('timeout', 'agentdecision')
+            return original(facts, messages, previous_results)
+        self.agent.decide = selective
+        with self.assertLogs('app.orchestrator', level='WARNING') as logs:
+            self.assertEqual(self.service.tick(NOW), 1)
+        self.assertIsNone(self.store.get_plan('chat1').pending_proposal_id)
+        self.assertIsNotNone(self.store.get_plan('chat2').pending_proposal_id)
+        self.assertEqual([chat for chat, _ in self.sent], ['chat2'])
+        self.assertIn('timeout', logs.output[0])
+        self.assertNotIn('chat1', logs.output[0])
+        self.assertNotIn(self.facts.goal, logs.output[0])
+
+    def test_scheduler_approval_recovery_failure_does_not_starve_second_plan(self):
+        self.service.tick(NOW)
+        proposal_id = self.store.get_plan('chat1').pending_proposal_id
+        self.store.approve(proposal_id, 'nick', 'stored-approval')
+        self.store.save_plan('chat2', self.facts, NOW - timedelta(minutes=31))
+        def unavailable_book(*args):
+            raise RuntimeError('secret conversation and key')
+        self.service._book = unavailable_book
+        with self.assertLogs('app.orchestrator', level='WARNING') as logs:
+            self.assertEqual(self.service.tick(NOW + timedelta(minutes=1)), 1)
+        self.assertIsNotNone(self.store.get_plan('chat2').pending_proposal_id)
+        self.assertNotIn('secret', ''.join(logs.output))
+        self.assertIsNone(self.store.reservation(proposal_id))
 
     def test_ask_names_actual_conflict_when_date_and_city_are_known(self):
         conflicted = PlanFacts(**{**self.facts.__dict__, "blockers": ["conflicting availability"]})

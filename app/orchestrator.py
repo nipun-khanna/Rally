@@ -1,9 +1,11 @@
 """Connect conversation state, agent decisions, scheduler, and approved actions."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 from threading import RLock
 from uuid import uuid4
 
+from app.agent import GrokProviderError
 from app.bluebubbles import DeliveryUncertainError
 from app.models import ChatMessage, Plan, PlanFacts, Proposal
 from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
@@ -11,6 +13,17 @@ from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
 from app.places import PlacesError
 from app.reservations import create_reservation
 from app.store import Store
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log_scheduled_failure(phase: str, exc: Exception):
+    if isinstance(exc, GrokProviderError):
+        logger.warning("Scheduled %s failed: type=%s stage=%s kind=%s status=%s",
+                       phase, type(exc).__name__, exc.stage, exc.kind, exc.status_code)
+    else:
+        logger.warning("Scheduled %s failed: type=%s", phase, type(exc).__name__)
 
 
 class RallyService:
@@ -102,23 +115,30 @@ class RallyService:
         for plan in self.store.active_plans():
             if not self._chat_allowed(plan.chat_id):
                 continue
-            if plan.state == "READY" and plan.pending_proposal_id:
-                proposal = self.store.get_proposal(plan.pending_proposal_id)
-                if (proposal and proposal.created_at and not self.store.has_approval(proposal.id)
-                        and now - datetime.fromisoformat(proposal.created_at) > timedelta(hours=24)):
-                    self.store.expire_proposal(proposal.id)
-                    continue
-            if plan.pending_proposal_id and self.store.has_approval(plan.pending_proposal_id):
-                proposal = self.store.get_proposal(plan.pending_proposal_id)
-                if proposal and proposal.status == "pending" and proposal.version == plan.version:
-                    self._book(plan, proposal)
+            try:
+                if plan.state == "READY" and plan.pending_proposal_id:
+                    proposal = self.store.get_proposal(plan.pending_proposal_id)
+                    if (proposal and proposal.created_at and not self.store.has_approval(proposal.id)
+                            and now - datetime.fromisoformat(proposal.created_at) > timedelta(hours=24)):
+                        self.store.expire_proposal(proposal.id)
+                        continue
+                if plan.pending_proposal_id and self.store.has_approval(plan.pending_proposal_id):
+                    proposal = self.store.get_proposal(plan.pending_proposal_id)
+                    if proposal and proposal.status == "pending" and proposal.version == plan.version:
+                        self._book(plan, proposal)
+            except Exception as exc:
+                _log_scheduled_failure("approval recovery", exc)
         self.deliver_pending()
         count = 0
         for plan in self.store.active_plans():
             if not self._chat_allowed(plan.chat_id):
                 continue
             if eligible_for_intervention(plan, now, self.stall_minutes):
-                self._intervene(plan, now)
+                try:
+                    self._intervene(plan, now)
+                except Exception as exc:
+                    _log_scheduled_failure("intervention", exc)
+                    continue
                 count += 1
         return count
 

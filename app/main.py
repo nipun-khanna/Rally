@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
+from app.agent import GrokProviderError
 from app.bluebubbles import normalize_webhook
 from app.debug_view import render_debug_view
 from app.history import BlueBubblesHistoryClient, HistoryImporter, normalize_archive_message
@@ -21,6 +22,28 @@ from app.portal_view import render_portal
 
 
 logger = logging.getLogger(__name__)
+
+
+def _log_failure(phase: str, exc: Exception):
+    if isinstance(exc, GrokProviderError):
+        logger.warning("%s failed: stage=%s kind=%s status=%s",
+                       phase, exc.stage, exc.kind, exc.status_code)
+    else:
+        logger.warning("%s failed: type=%s", phase, type(exc).__name__)
+
+
+async def _run_scheduled_checks(relationship_service, service):
+    checks = []
+    if relationship_service:
+        if relationship_service.learner:
+            checks.append(("Scheduled relationship learning", relationship_service.learner.sync))
+        checks.append(("Scheduled relationship reminders", relationship_service.tick))
+    checks.append(("Scheduled group evaluation", service.tick))
+    for phase, check in checks:
+        try:
+            await asyncio.to_thread(check)
+        except Exception as exc:
+            _log_failure(phase, exc)
 
 
 def create_app(service=None, *, webhook_token: str | None = None,
@@ -105,14 +128,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
         while True:
             await asyncio.sleep(tick_seconds)
             ticks += 1
-            try:
-                if relationship_service:
-                    if relationship_service.learner:
-                        await asyncio.to_thread(relationship_service.learner.sync)
-                    await asyncio.to_thread(relationship_service.tick)
-                await asyncio.to_thread(service.tick)
-            except Exception:
-                logger.exception("Scheduled plan evaluation failed")
+            await _run_scheduled_checks(relationship_service, service)
             await asyncio.to_thread(import_one_page)
             if publish_enabled and ticks % max(1, 300 // tick_seconds) == 0:
                 try:
@@ -179,7 +195,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
         message = ChatMessage(**incoming.__dict__)
         try:
             return {"accepted": service.receive(message)}
-        except Exception:
+        except Exception as exc:
+            _log_failure("Group request", exc)
             raise HTTPException(503, "Rally could not process this message") from None
 
     @app.post("/demo/evaluate")
