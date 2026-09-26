@@ -64,3 +64,9 @@ Private relationship tracking, reminder scheduling, and selected-conversation
 learning are documented in [relationship setup](docs/relationship-setup.md).
 Monitoring runs on your Mac without sending selected texts to Grok. Configure a
 private destination and choose sources explicitly; neither is enabled by default.
+
+### Voice check-in
+
+An owner-only browser page lets you talk to Rally with Grok Voice about your
+relationships and stalled plans, and confirm one drafted action ("send it",
+"run the check") by voice. Disabled by default; see [voice setup](docs/voice.md).

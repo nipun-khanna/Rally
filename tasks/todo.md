@@ -502,4 +502,43 @@ private history exported, deployment changed, or live configuration modified.
 - Explicit `Rally, build/automate/do/use tools…` requests enter the adaptive planner in allowlisted chats. Portal commands and direct web lookups keep their existing priority. Registered read tools are plan status and the existing budgeted web search. No commitment tool is currently registered, so approval-bound side effects remain a framework, not a live capability.
 - Missing capabilities are durable. An optional second model call drafts Python source as inert, private data for developer review; no generation result is installed or executed. The review endpoint requires a separate admin token in a request header and is outside the public portal.
 - Synthetic xAI planner call selected `get_plan_status` successfully. Synthetic xAI code-draft call produced a syntax-valid `pending_review` artifact. Neither test sent an iMessage or used private group context. Full suite: 215 tests passed before final review.
+
+## Repository hygiene — 2026-09-26
+
+- [x] Discovered a plaintext `env` file (not `.env`) had been committed with a live xAI key, webhook token, and BlueBubbles password, because `.gitignore` only covered `.env`. User deleted the file locally and said not to worry about the key (handled separately).
+- [x] Removed `env` from git tracking, added it to `.gitignore` alongside `.env`, committed the fix (`a3c578a`). Not yet pushed to `origin/main`, where the original leaking commit (`030fcf1`) still exists in history.
+- [ ] Push the cleanup commit. Rotating/invalidating the exposed xAI key and BlueBubbles password remains the user's responsibility; git history on the shared remote still contains the old values regardless of this fix.
+
+## Grok Voice relationship check-in — 2026-09-26
+
+User wants Grok Voice (not image) as the relationship check-in interface: ask
+"who am I falling behind with" or "figure something out with Jake" by voice,
+get a conversational answer grounded in real relationship/plan state, and
+confirm one drafted action ("yeah, do it") to send a real iMessage or run the
+existing planning check. Confirmed: no second Apple account needed; this is
+additive to the existing one-account BlueBubbles setup. Dashboard/follow-up
+detection/calendar remain teammate-owned per docs/team-ownership.md; voice
+calls those areas through explicit interfaces with clearly labeled placeholder
+results until teammates deliver.
+
+- [x] Research xAI's realtime voice protocol (ephemeral tokens, session.update,
+      audio events, function-call event sequence) directly from docs.x.ai.
+- [x] Implement `app/voice/` (tools, pending-action store, ephemeral-token
+      minting, owner-only browser page) and wire `/voice`, `/voice/session`,
+      `/voice/tool` into `app/main.py`, gated by `RALLY_ADMIN_TOKEN`.
+- [x] Real tools: `list_attention`, `get_person`, `set_intention`,
+      `check_plan_status` (via existing `rel_sources` chat linkage),
+      `propose_message`/`nudge_plan` (draft-only) plus a single `confirm_action`
+      commitment tool that sends the drafted iMessage or runs the existing
+      `service.evaluate`. Calendar (`find_hangout_slot`) and follow-up
+      detection are explicit stubs pending teammate work.
+- [x] `tests/test_voice_tools.py` (17 tests) against real `Store`/
+      `RelationshipStore`/`RallyService` code, no network. Full suite: 240
+      passed.
+- [ ] Live verification with a real browser, microphone, and xAI ephemeral
+      token round-trip has not been done — see "Known limitations" in
+      docs/voice.md, especially the guessed ephemeral-token response field
+      name and unverified audio round-trip/barge-in behavior.
+- [ ] Set `RALLY_VOICE_ENABLED=1` once the xAI key is confirmed rotated and
+      live-test the demo script in docs/voice.md.
 - One labeled Akshit–Nipun group request entered through BlueBubbles, completed the adaptive `get_plan_status` step and sent a same-chat direct reply (`Rally: {"status": "none"}`). Inbound message was processed, adaptive request status `complete`, outbox `sent`. This verifies the read-only live adaptive route; generated code and commitment tools were not tested in the live chat.

@@ -59,6 +59,9 @@ class Settings:
     adaptive_enabled: bool = True
     adaptive_code_proposals: bool = True
     admin_token: str = ""
+    voice_enabled: bool = False
+    voice_owner: str = "local-imessage-account"
+    voice_model: str = "grok-voice-latest"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -92,12 +95,17 @@ class Settings:
                          source.get("RALLY_GOOGLE_CALENDAR_ID", ""))
         if calendar_enabled and not all(calendar_keys):
             raise ValueError("Calendar is enabled without complete Google credentials")
+        voice_enabled = source.get("RALLY_VOICE_ENABLED", "0") == "1"
+        admin_token = source.get("RALLY_ADMIN_TOKEN", "")
+        xai_api_key = source.get("RALLY_XAI_API_KEY", "")
+        if voice_enabled and not (admin_token and xai_api_key):
+            raise ValueError("Voice is enabled without an admin token and xAI API key")
         return cls(
             database_path=Path(source.get("RALLY_DATABASE_PATH", "data/rally.sqlite3")),
             webhook_token=source.get("RALLY_WEBHOOK_TOKEN", ""),
             bluebubbles_url=source.get("RALLY_BLUEBUBBLES_URL", ""),
             bluebubbles_password=source.get("RALLY_BLUEBUBBLES_PASSWORD", ""),
-            xai_api_key=source.get("RALLY_XAI_API_KEY", ""),
+            xai_api_key=xai_api_key,
             meta_model_api_key=source.get("RALLY_META_MODEL_API_KEY", ""),
             extraction_provider=extraction_provider,
             grok_model=source.get("RALLY_GROK_MODEL", "grok-4.7"),
@@ -127,7 +135,10 @@ class Settings:
             web_max_tool_calls=web_max_tool_calls,
             adaptive_enabled=source.get("RALLY_ADAPTIVE_ENABLED", "1") == "1",
             adaptive_code_proposals=source.get("RALLY_ADAPTIVE_CODE_PROPOSALS", "1") == "1",
-            admin_token=source.get("RALLY_ADMIN_TOKEN", ""),
+            admin_token=admin_token,
+            voice_enabled=voice_enabled,
+            voice_owner=source.get("RALLY_VOICE_OWNER", "local-imessage-account"),
+            voice_model=source.get("RALLY_VOICE_MODEL", "grok-voice-latest"),
         )
 
 

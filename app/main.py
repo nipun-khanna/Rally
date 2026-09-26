@@ -19,6 +19,8 @@ from app.portal_commands import portal_reply
 from app.portal_data import build_portal_data
 from app.portal_store import PortalStore
 from app.portal_view import render_portal
+from app.voice.page import render_voice_page
+from app.voice.session import VoiceSessionError, build_session_payload, mint_ephemeral_token
 
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
                history_client: BlueBubblesHistoryClient | None = None,
                app_url: str | None = None, media_root: str | Path | None = None,
                history_enabled: bool = True, relationship_service=None,
-               admin_token: str | None = None) -> FastAPI:
+               admin_token: str | None = None, voice_registry=None,
+               voice_model: str | None = None, xai_api_key: str | None = None) -> FastAPI:
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -76,6 +79,15 @@ def create_app(service=None, *, webhook_token: str | None = None,
                               if settings.bluebubbles_url and settings.bluebubbles_password else None)
             relationship_service = RelationshipService(private_store, service.send_fn,
                                                        RelationshipLearner(private_store, private_client))
+        xai_api_key = settings.xai_api_key
+        voice_model = settings.voice_model
+        if settings.voice_enabled:
+            from app.voice.store import VoiceActionStore
+            from app.voice.tools import build_voice_tools
+            voice_registry = build_voice_tools(
+                settings.voice_owner, relationship_store=relationship_service.store,
+                plan_store=service.store, service=service,
+                action_store=VoiceActionStore(service.store.path))
     else:
         publish_enabled = False
     tick_seconds = tick_seconds or 60
@@ -221,12 +233,46 @@ def create_app(service=None, *, webhook_token: str | None = None,
         return HTMLResponse(render_debug_view(plan, proposal, reservation,
                                              messages=service.store.recent_messages(chat_id)))
 
+    def authorize_admin(candidate: str | None):
+        if not admin_token or not candidate or not hmac.compare_digest(candidate, admin_token):
+            raise HTTPException(403, 'Admin token required')
+
+    @app.get('/voice', response_class=HTMLResponse)
+    def voice_page(token: str | None = None):
+        authorize_admin(token)
+        if voice_registry is None:
+            raise HTTPException(404, 'Voice is not enabled')
+        return HTMLResponse(render_voice_page(admin_token or '', voice_model or 'grok-voice-latest'))
+
+    @app.post('/voice/session')
+    def voice_session(x_rally_admin_token: str | None = Header(default=None)):
+        authorize_admin(x_rally_admin_token)
+        if voice_registry is None:
+            raise HTTPException(404, 'Voice is not enabled')
+        try:
+            ephemeral_token = mint_ephemeral_token(xai_api_key or '')
+        except VoiceSessionError as exc:
+            raise HTTPException(502, str(exc)) from None
+        return {'ephemeral_token': ephemeral_token,
+                'session': build_session_payload(tools=voice_registry.session_tools())}
+
+    @app.post('/voice/tool')
+    def voice_tool(payload: dict, x_rally_admin_token: str | None = Header(default=None)):
+        authorize_admin(x_rally_admin_token)
+        if voice_registry is None:
+            raise HTTPException(404, 'Voice is not enabled')
+        name, args = payload.get('name'), payload.get('args') or {}
+        if not isinstance(name, str) or not isinstance(args, dict):
+            raise HTTPException(400, 'Invalid tool call')
+        try:
+            return {'result': voice_registry.call(name, args)}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     @app.get('/adaptive/admin/requests/{request_id}')
     def adaptive_request(request_id: str, include_source: bool = False,
                          x_rally_admin_token: str | None = Header(default=None)):
-        if not admin_token or not x_rally_admin_token or not hmac.compare_digest(
-                x_rally_admin_token, admin_token):
-            raise HTTPException(403, 'Admin token required')
+        authorize_admin(x_rally_admin_token)
         handler = getattr(service, 'adaptive_handler', None)
         if handler is None:
             raise HTTPException(404, 'Adaptive requests unavailable')
