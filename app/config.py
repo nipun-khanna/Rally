@@ -44,6 +44,7 @@ class Settings:
     app_url: str = ""
     portal_publish_approved: bool = False
     history_enabled: bool = True
+    grok_extraction_timeout: float = 60
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -53,6 +54,9 @@ class Settings:
         max_requests = int(source.get("RALLY_MAX_PLACE_REQUESTS", "100"))
         max_calendar_requests = int(source.get("RALLY_MAX_CALENDAR_REQUESTS", "20"))
         calendar_enabled = source.get("RALLY_CALENDAR_ENABLED", "0") == "1"
+        extraction_timeout = float(source.get("RALLY_GROK_EXTRACTION_TIMEOUT", "60"))
+        if not 1 <= extraction_timeout <= 120:
+            raise ValueError("Extraction timeout must be between 1 and 120 seconds")
         extraction_provider = source.get("RALLY_EXTRACTION_PROVIDER", "grok").lower()
         if stall_minutes < 1 or tick_seconds < 1 or not 1 <= max_requests <= 1000:
             raise ValueError("Invalid Rally interval or place request cap")
@@ -94,13 +98,15 @@ class Settings:
             app_url=source.get("RALLY_APP_URL", ""),
             portal_publish_approved=source.get("RALLY_PORTAL_PUBLISH_APPROVED", "0") == "1",
             history_enabled=source.get("RALLY_HISTORY_ENABLED", "1") == "1",
+            grok_extraction_timeout=extraction_timeout,
         )
 
 
 def build_service(settings: Settings) -> RallyService:
     store = Store(settings.database_path)
     agent = GrokClient(settings.xai_api_key, settings.grok_model,
-                       default_city=settings.default_city, time_zone=settings.time_zone)
+                       default_city=settings.default_city, time_zone=settings.time_zone,
+                       extraction_timeout=settings.grok_extraction_timeout)
     extractor = (MuseExtractor(settings.meta_model_api_key,
                                default_city=settings.default_city, time_zone=settings.time_zone)
                  if settings.extraction_provider == "muse" else agent)

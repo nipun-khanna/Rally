@@ -1,4 +1,6 @@
 import unittest
+from unittest.mock import patch
+import httpx
 from datetime import datetime, timezone
 
 from app.agent import GrokClient
@@ -8,6 +10,44 @@ from app.models import ChatMessage, PlanFacts
 class AgentTests(unittest.TestCase):
     def setUp(self):
         self.messages = [ChatMessage("m1", "chat", "nick", "Dinner Friday?", datetime(2026, 9, 22, 18, tzinfo=timezone.utc))]
+
+    def test_provider_timeout_is_identifiable_without_leaking_request(self):
+        with patch('app.agent.httpx.post', side_effect=httpx.ReadTimeout('secret request text')) as post:
+            with self.assertRaises(RuntimeError) as failure:
+                GrokClient('secret-key').extract(self.messages, None)
+        self.assertEqual(failure.exception.kind, 'timeout')
+        self.assertEqual(failure.exception.stage, 'extracted')
+        self.assertIsNone(failure.exception.status_code)
+        self.assertNotIn('secret', str(failure.exception))
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.kwargs['timeout'], 60)
+
+    def test_provider_http_failure_exposes_only_status(self):
+        response = httpx.Response(429, text='secret response', request=httpx.Request('POST', 'https://api.x.ai/v1/chat/completions'))
+        with patch('app.agent.httpx.post', return_value=response):
+            with self.assertRaises(RuntimeError) as failure:
+                GrokClient('secret-key').extract(self.messages, None)
+        self.assertEqual(failure.exception.kind, 'http')
+        self.assertEqual(failure.exception.status_code, 429)
+        self.assertNotIn('secret', str(failure.exception))
+
+    def test_provider_malformed_response_has_separate_failure_kind(self):
+        response = httpx.Response(200, json={'choices': []}, request=httpx.Request('POST', 'https://api.x.ai/v1/chat/completions'))
+        with patch('app.agent.httpx.post', return_value=response):
+            with self.assertRaises(RuntimeError) as failure:
+                GrokClient('key').extract(self.messages, None)
+        self.assertEqual(failure.exception.kind, 'response')
+
+    def test_direct_reply_keeps_short_timeout_when_extraction_budget_changes(self):
+        response = httpx.Response(200, json={'choices': [{'message': {'content': '{"message":"Hello"}'}}]}, request=httpx.Request('POST', 'https://api.x.ai/v1/chat/completions'))
+        with patch('app.agent.httpx.post', return_value=response) as post:
+            self.assertEqual(GrokClient('key', extraction_timeout=90).answer_direct('Rally hello', None, self.messages), 'Hello')
+        self.assertEqual(post.call_args.kwargs['timeout'], 25)
+
+    def test_extraction_timeout_configuration_is_bounded(self):
+        for timeout in (0, 121, float('nan')):
+            with self.assertRaises(ValueError):
+                GrokClient('key', extraction_timeout=timeout)
 
     def test_direct_answer_uses_group_context_and_validates_text(self):
         calls = []

@@ -49,6 +49,17 @@ class DirectAnswer(BaseModel):
     message: str = Field(min_length=1, max_length=500)
 
 
+class GrokProviderError(RuntimeError):
+    """Safe diagnostics that never include conversation or provider response bodies."""
+
+    def __init__(self, kind: str, stage: str, status_code: int | None = None):
+        self.kind = kind
+        self.stage = stage
+        self.status_code = status_code
+        super().__init__(f"Grok {stage} failed: {kind}" +
+                         (f" (HTTP {status_code})" if status_code is not None else ""))
+
+
 _WEEKDAYS = {name: index for index, name in enumerate(
     ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"))}
 
@@ -73,12 +84,16 @@ def _relative_date(text: str, sent_at: date) -> date | None:
 
 class GrokClient:
     def __init__(self, api_key: str, model: str = "grok-4.7", transport: Callable | None = None,
-                 default_city: str = "", time_zone: str = "America/New_York"):
+                 default_city: str = "", time_zone: str = "America/New_York",
+                 extraction_timeout: float = 60):
+        if not 1 <= extraction_timeout <= 120:
+            raise ValueError("Extraction timeout must be between 1 and 120 seconds")
         self.api_key = api_key
         self.model = model
         self.transport = transport
         self.default_city = default_city
         self.time_zone = ZoneInfo(time_zone)
+        self.extraction_timeout = extraction_timeout
 
     def _call(self, schema: type[BaseModel], prompt: str, data: dict) -> dict:
         payload = {
@@ -94,14 +109,22 @@ class GrokClient:
             return self.transport(payload)
         if not self.api_key:
             raise RuntimeError("Grok API key is missing")
+        stage = schema.__name__.lower()
+        timeout = self.extraction_timeout if schema is Extracted else 25
         try:
             response = httpx.post("https://api.x.ai/v1/chat/completions", json=payload,
-                                  headers={"Authorization": f"Bearer {self.api_key}"}, timeout=25)
+                                  headers={"Authorization": f"Bearer {self.api_key}"}, timeout=timeout)
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             return json.loads(content)
-        except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-            raise RuntimeError("Grok request or structured response failed") from None
+        except httpx.TimeoutException:
+            raise GrokProviderError("timeout", stage) from None
+        except httpx.HTTPStatusError as exc:
+            raise GrokProviderError("http", stage, exc.response.status_code) from None
+        except httpx.HTTPError:
+            raise GrokProviderError("transport", stage) from None
+        except (KeyError, IndexError, ValueError, TypeError):
+            raise GrokProviderError("response", stage) from None
 
     def _messages(self, messages: list[ChatMessage]) -> list[dict]:
         return [{"id": m.message_id, "sender_id": m.sender_id, "text": m.text,
