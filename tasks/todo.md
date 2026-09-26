@@ -14,13 +14,15 @@
 - [x] Give the portal an iMessage-inspired visual design, especially for the message timeline, with responsive layout and readable plans and analytics.
 - [x] Define how group members request and authorize portal configuration changes through explicit Rally commands in the allowlisted chat.
 - [x] Verify the archive import, media delivery, history search, analytics, settings, and portal rendering using tests and a local running app.
-- [ ] Organize implementation into sequential commits and push to the configured GitHub remote when authentication permits.
+- [x] Organize implementation into sequential commits and push to the configured private GitHub remote.
 - [x] Use the Vercel CLI to create the user-selected `rallyplans` project and assign `rallyplans.vercel.app` with a data-free holding page; verify the production alias returns 200.
 - [x] Publish the actual group portal to that domain after explicit approval to upload the group's archived messages and media to Vercel.
 
 ### Portal review — 2026-09-26
 
 The selected group import completed with 72 source messages and six available attachments; two participant names resolved from local Contacts. The live FastAPI page, a media endpoint, and the local historical-plan lookup returned 200. A labeled `Hey Rally, send our page link` test sent one prompt and received one same-thread URL reply; the published Vercel page then reflected that exchange. Vercel's production alias returned 200 for the group page, history index, and media; active attachment formats are download-only with restrictive headers. Historical-plan lookup uses local text matching and does not send archived messages to xAI. An automatic approval review rejected that proposed xAI archive call because external transfer of private history had not been specifically authorized; the local search replaced it. Vercel publication of the archive was later explicitly approved. The site is a static snapshot refreshed by the running Mac service about every five minutes; immutable deployments and caches mean old published data cannot be guaranteed erased instantly.
+
+Portal commits `f0a88d3`, `48946af`, and `5b3ad2a` were pushed to the verified private `nipun-khanna/Rally` remote. The final webhook-facing service is running on port 8770, with health returning 200 and access logs disabled. The current Vercel production alias serves the final portal; obsolete Vercel deployments created during setup were removed.
 
 ## Future idea — adaptable requests
 
