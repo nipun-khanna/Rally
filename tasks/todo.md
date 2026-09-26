@@ -2,6 +2,26 @@
 
 ## Relationship maintenance service
 
+### Two-profile feasibility test
+
+- [x] User approved testing one Mac with personal and Rally macOS profiles.
+- [x] Verify macOS 26.0.1, 16 GB RAM, existing BlueBubbles, and administrator membership; noninteractive sudo unavailable.
+- [x] Create and verify standard Rally macOS user (`rally`, UID 503); user entered local password.
+- [ ] Sign into Rally's separate Apple account in that user's Messages and confirm native send works.
+- [ ] Run BlueBubbles in Rally profile on a separate local port with its own password.
+- [ ] Switch back while leaving Rally logged in; verify one labeled sender-to-owner message arrives.
+- [ ] Record stability and permissions results; decide whether to keep this topology or use a shared sender host.
+- [ ] Later: measure and reduce monitoring CPU, memory, and idle work; user explicitly deferred this until after setup.
+
+### Live relationship test on current Messages account
+
+- [ ] Locate or create a self-only iMessage test thread and verify delivery.
+- [ ] Exercise setup/status, call/visit/message confirmations, cadence changes, snooze, pause/resume, removal, deduplication, and a due reminder in isolated test state.
+- [ ] Verify local learning on an explicitly selected source; keep all other history disabled and no source text transfer to Grok/Vercel.
+- [ ] Record actual receipts, failures, cleanup, and remaining sender/provider gaps.
+
+- [ ] Resolve deployment architecture: user's local monitor plus local notifications, or a separate Rally iMessage sender with minimal authenticated relay. Current code uses one BlueBubbles account; it does not yet implement the separate sender topology.
+
 - [x] Inspect current scheduling, persistence, message handling, and archive-disable state.
 - [x] Draft relationship-service design with confirmed contact, learning, reminder cycles, and private data isolation.
 - [x] Review written design: private Rally conversation and explicitly selected learning conversations approved.
@@ -315,3 +335,26 @@ Implemented file map; closely related responsibilities share modules to keep the
 - Approval is bound to the sent current proposal, expires after 24 hours, and is blocked when an earlier message failed extraction. SQLite keeps completed plan history and recovers an approval saved before a crash.
 - The remaining open P0 boxes cover live provider preflight and a live same-thread iMessage run. Credentials and a BlueBubbles Mac server are required for those checks.
 - Outbound transport can have an ambiguous result if BlueBubbles accepts a message but the connection fails before Rally receives its response. Such sends are now held as `uncertain` rather than automatically retried; inspect the chat before any manual retry. The mock reservation itself remains idempotent.
+
+
+## Hackathon demo audit — 2026-09-26
+
+Scope: favor one source-backed group-planning flow; no live messages, deployment,
+private history export, or changes to existing user configuration. Context fields
+(hours, team, tracks) were placeholders; use relative sprint allocation.
+
+- [x] Inspect repository, integrations, lessons, and primary planning flow.
+- [x] Independently audit model/transport dependencies and demo failure paths.
+- [x] Record the eight-section judge review in docs/hackathon-review.md.
+- [ ] Restore pinned dependencies and establish test baseline.
+- [x] Show escaped source quotes in the authenticated debug view.
+- [x] Make the proposal's explicit approval phrase discoverable.
+- [x] Export labeled offline replay snapshots using the existing smoke scenario.
+- [x] Verify each change and run full pytest plus primary demo smoke.
+- [x] Record results and remaining live integration limitations.
+
+### Push verification — 2026-09-26
+
+- Full pytest: 155 passed, one existing dependency warning.
+- Offline smoke: DONE, one simulated reservation, two captured messages.
+- `git diff --check`: clean. Live iMessage self-test creation returned uncertain; no automatic retry. Vercel CI is not implemented.

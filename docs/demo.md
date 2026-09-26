@@ -34,4 +34,23 @@ For an offline code check with no accounts, run `python -m scripts.demo_smoke`. 
 
 ## Failure behavior
 
+For a browser fallback, prepare the synthetic offline replay before the presentation:
+
+```sh
+.venv/bin/python -m scripts.demo_smoke --output-dir data/demo_replay
+.venv/bin/python -m http.server 8792 --bind 127.0.0.1 --directory data/demo_replay
+```
+
+Open `http://127.0.0.1:8792/blocked.html` and use the three stage links. Each page
+states that extraction and venues are fixed fixtures and that booking is simulated.
+The replay uses a fresh temporary database, upcoming Friday, cited synthetic source
+messages, and a sushi candidate rejected by Rally's real cuisine filter. It exercises
+proposal, explicit approval, and local delivery state; it does not prove live model
+extraction, iMessage transport, or real venue availability. No private history is exported.
+
+For the live demo, keep the authenticated local `/debug` page open and refresh after
+proposal and approval. It shows source quotes from the recent same-chat messages;
+older references outside that window are labeled unavailable. The hosted group portal
+is a static snapshot and should not be used to demonstrate immediate state changes.
+
 If venue search fails or the free request cap is reached, Rally does not invent a venue. A definite local delivery failure stays in SQLite's outbox for a later attempt; retrying delivery does not rerun the reservation. A BlueBubbles error or lost response is marked `uncertain` and is **not automatically retried** because the message may already have reached iMessage. Inspect the group thread before resolving or retrying it. If the mock reservation fails, the plan stays unresolved and is not automatically retried. A changed venue, time, date, or party size invalidates its pending proposal and needs fresh approval. An unapproved proposal expires after 24 hours.

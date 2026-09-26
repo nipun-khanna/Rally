@@ -39,11 +39,13 @@ Ask `Hey Rally, send our page link` in the group. Members can also ask `Hey Rall
 ## Test with code
 
 ```sh
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pytest -q
 .venv/bin/python -m scripts.demo_smoke
 ```
 
-The smoke script exercises plan state, automatic intervention, proposal, explicit approval, mock reservation, and final report with fixed local fixtures. It makes no external calls. Live BlueBubbles, Grok, and Geoapify calls require credentials and are separate from this local smoke check.
+Install the test runner with `uv pip install --python .venv/bin/python pytest` (or pip in that environment). Use pytest for the full suite: unittest discovery skips the pytest function tests.
+
+The smoke script exercises plan state, automatic intervention, proposal, explicit approval, mock reservation, and final report with fixed local fixtures. It makes no external calls. Add `--output-dir data/demo_replay` to export labeled browser snapshots; see [the replay steps](docs/demo.md). Live BlueBubbles, Grok, and Geoapify calls require credentials and are separate from this local smoke check.
 
 Optional Google Calendar creation is documented in [docs/calendar.md](docs/calendar.md). It is disabled by default and requires approval that explicitly includes adding a calendar event.
 ### Relationship reminders

@@ -1,5 +1,11 @@
 # Project lessons
 
+## 2026-09-26 — Separate local monitoring from Rally's identity
+
+- User correction: treating the monitored user's current iMessage profile as Rally's account does not describe a deployable personal reminder service.
+- Rule: distinguish the user's local data/analysis identity, reminder recipient, and Rally's sending identity before configuring live delivery. A dedicated sender cannot access another account's history merely by receiving a private message.
+- Rule: local monitoring can use local notifications directly; separate-contact iMessage reminders require a separately authenticated sender and a minimal, authenticated relay. Do not claim the current single-account transport implements that deployment.
+
 ## 2026-09-26 — Group sites need complete history
 
 - User correction: the proposed group website must reflect the full existing group history, including messages before Rally joined.
@@ -52,3 +58,8 @@
 
 - User steering: complete the task document quickly after functionality was settled.
 - Rule: write the requested artifact before optional further research or process discussion when requirements are sufficient.
+
+## 2026-09-26 — Website collaboration deployment scope
+
+- User correction: GitHub-to-Vercel deployment is for other developers working on the website.
+- Rule: separate website code previews and production deployment from local chat-data publication; do not propose a Mac runner for frontend collaboration.
