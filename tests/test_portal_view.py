@@ -4,6 +4,20 @@ from app.portal_view import render_portal
 
 
 class PortalViewTests(unittest.TestCase):
+    def test_archive_has_keyboard_navigation_and_respects_reduced_motion(self):
+        page = render_portal({"title": "Friends", "messages": [
+            {"sender": "Nipun", "timestamp": "2026-09-26 10:30", "text": "Hello"},
+        ]})
+        self.assertIn('class="skip-link" href="#main-content"', page)
+        self.assertIn('id="main-content"', page)
+        self.assertIn('aria-label="Portal sections"', page)
+        self.assertIn('aria-label="Conversation messages"', page)
+        self.assertIn('aria-label="Message from Nipun', page)
+        self.assertIn(':focus-visible', page)
+        self.assertIn('@media (prefers-reduced-motion: reduce)', page)
+        self.assertIn('@media (max-width: 480px)', page)
+        self.assertIn('--blue:#0A84FF', page)
+
     def test_full_portal_renders_history_media_plans_and_controls(self):
         page = render_portal({
             "title": "Friday Crew", "import_status": {"state": "complete", "imported": 42},
@@ -44,6 +58,11 @@ class PortalViewTests(unittest.TestCase):
         self.assertIn("12 messages", page)
         self.assertIn("old.mov", page)
         self.assertIn("Media unavailable", page)
+
+    def test_midnight_theme_uses_light_links_for_dark_surfaces(self):
+        page = render_portal({"theme": "midnight"})
+        self.assertIn("--link:#8fc8ff", page)
+        self.assertIn("a { color:var(--link);", page)
 
 
 if __name__ == "__main__":

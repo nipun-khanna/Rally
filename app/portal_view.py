@@ -78,8 +78,8 @@ def render_portal(data: dict) -> str:
             reactions = "".join(f'<span>{_e(r.get("sender"))}: {_e(r.get("type"))}</span>' for r in msg.get("reactions") or [])
             if not body and not media:
                 continue
-            bubbles.append(f'<li class="message"><div class="message-meta"><strong>{sender}</strong> <time>{when}</time></div><div class="bubble">{body}{media}</div><div class="reactions">{reactions}</div></li>')
-        history = f'<ol class="messages">{"".join(bubbles) if bubbles else "<li class=empty>No messages imported yet.</li>"}</ol>'
+            bubbles.append(f'<li class="message" aria-label="Message from {sender} at {when}"><div class="message-meta"><strong>{sender}</strong> <time>{when}</time></div><div class="bubble">{body}{media}</div><div class="reactions">{reactions}</div></li>')
+        history = f'<ol class="messages" aria-label="Conversation messages">{"".join(bubbles) if bubbles else "<li class=empty>No messages imported yet.</li>"}</ol>'
         older_url = _safe_media_url(data.get("older_url"))
         if older_url:
             history += f'<p class="older"><a href="{older_url}">Older messages</a></p>'
@@ -123,23 +123,25 @@ def render_portal(data: dict) -> str:
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · Rally</title><style>
-:root {{ color-scheme:light; --blue:#007aff; --ink:#172334; --muted:#617084; --line:#dce2e9; --surface:#fff; --back:#f2f3f7; }}
-body.midnight {{ color-scheme:dark; --blue:#61a4ff; --ink:#eef3fb; --muted:#b0bfd1; --line:#3a4758; --surface:#202a38; --back:#121a25; }}
-body.sage {{ --blue:#447c63; --ink:#20312a; --muted:#61756a; --line:#d1dfd4; --surface:#fff; --back:#edf4ed; }}
+:root {{ color-scheme:light; --blue:#0A84FF; --link:#075bb0; --ink:#1c2735; --muted:#526274; --line:#e2e5eb; --surface:#fff; --back:#f5f6f8; }}
+body.midnight {{ color-scheme:dark; --blue:#61a4ff; --link:#8fc8ff; --ink:#eef3fb; --muted:#b0bfd1; --line:#3a4758; --surface:#202a38; --back:#121a25; }}
+body.sage {{ --blue:#447c63; --link:#285d45; --ink:#20312a; --muted:#61756a; --line:#d1dfd4; --surface:#fff; --back:#edf4ed; }}
 * {{ box-sizing:border-box; }} html {{ scroll-behavior:smooth; }}
-body {{ margin:0; background:var(--back); color:var(--ink); font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-a {{ color:#0659b9; }} a:focus-visible,button:focus-visible,input:focus-visible {{ outline:3px solid #ffbd44; outline-offset:3px; }}
-header {{ background:var(--surface); border-bottom:1px solid var(--line); padding:1rem max(1rem,calc((100vw - 1080px)/2)); }}
-.brand {{ color:var(--blue); font-size:.8rem; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }}
-h1 {{ margin:.1rem 0; font-size:clamp(1.7rem,4vw,2.7rem); line-height:1.2; }} h2 {{ margin:0 0 1rem; font-size:1.18rem; }}
+body {{ margin:0; background:var(--back); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+a {{ color:var(--link); }} a:focus-visible,button:focus-visible,input:focus-visible {{ outline:3px solid #ffbd44; outline-offset:3px; }}
+.skip-link {{ position:absolute; top:-5rem; left:1rem; z-index:10; background:var(--surface); padding:.55rem .8rem; border-radius:8px; }} .skip-link:focus {{ top:.5rem; }}
+header {{ background:var(--surface); border-bottom:1px solid var(--line); padding:1.3rem max(1rem,calc((100vw - 1080px)/2)); }}
+.brand {{ color:var(--blue); font-size:.78rem; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }}
+h1 {{ margin:.12rem 0 .2rem; font-size:clamp(1.8rem,4vw,2.9rem); line-height:1.16; letter-spacing:-.035em; }} h2 {{ margin:0 0 1rem; font-size:1.2rem; letter-spacing:-.02em; }}
+.section-nav {{ display:flex; flex-wrap:wrap; gap:.35rem 1rem; margin-top:1.1rem; font-size:.85rem; font-weight:650; }} .section-nav a {{ text-decoration:none; }} .section-nav a:hover {{ text-decoration:underline; }}
 .members {{ display:flex; flex-wrap:wrap; gap:.35rem .7rem; list-style:none; padding:0; margin:.4rem 0 0; color:var(--muted); font-size:.9rem; }}
 .members li+li:before {{ content:"· "; }}
-main {{ width:min(1080px,calc(100% - 2rem)); margin:1.5rem auto 4rem; display:grid; grid-template-columns:minmax(0,1.8fr) minmax(260px,1fr); gap:1rem; align-items:start; }}
-.panel {{ background:var(--surface); border:1px solid var(--line); border-radius:18px; padding:1.2rem; min-width:0; margin-bottom:1rem; }}
+main {{ width:min(1080px,calc(100% - 2rem)); margin:1.6rem auto 4rem; display:grid; grid-template-columns:minmax(0,1.7fr) minmax(280px,1fr); gap:1.2rem; align-items:start; }}
+.panel {{ background:var(--surface); border:1px solid var(--line); border-radius:20px; padding:1.4rem; min-width:0; margin-bottom:0; box-shadow:0 8px 28px rgba(31,43,61,.035); }}
 .history {{ grid-row:span 3; }} .status {{ margin:0 0 1rem; color:var(--muted); font-size:.85rem; }}
-.messages {{ list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:1.15rem; max-height:68vh; overflow:auto; }}
-.message {{ max-width:min(90%,560px); }} .message-meta {{ color:var(--muted); font-size:.75rem; display:flex; flex-wrap:wrap; gap:.45rem; padding:0 .7rem .2rem; }}
-.bubble {{ background:#e9e9eb; border-radius:18px 18px 18px 5px; padding:.7rem 1rem; white-space:pre-wrap; overflow-wrap:anywhere; }}
+.messages {{ list-style:none; padding:.2rem .4rem .2rem 0; margin:0; display:flex; flex-direction:column; gap:1.2rem; max-height:68vh; overflow:auto; scrollbar-gutter:stable; }}
+.message {{ max-width:min(92%,560px); }} .message-meta {{ color:var(--muted); font-size:.78rem; display:flex; flex-wrap:wrap; gap:.45rem; padding:0 .7rem .3rem; }}
+.bubble {{ background:#e9e9eb; border-radius:18px 18px 18px 5px; padding:.8rem 1.05rem; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }}
 .midnight .bubble {{ background:#34455a; color:#fff; }} .midnight .reactions span {{ background:#202a38; }}
 .attachments {{ list-style:none; padding:.35rem 0 0; margin:0; }} .attachments li {{ padding:.3rem 0; border-top:1px solid #cbd3dc; }} .attachments small {{ display:block; color:var(--muted); }}
 .attachments img,.attachments video {{ display:block; width:min(100%,360px); max-height:320px; object-fit:contain; border-radius:10px; }} .attachments audio {{ max-width:100%; }}
@@ -153,10 +155,13 @@ input {{ min-width:0; flex:1; border:1px solid #a9b7c8; border-radius:10px; padd
 .old-plan-search small,.empty {{ color:var(--muted); }} .metrics {{ margin:0; }} .metrics div {{ display:flex; justify-content:space-between; gap:1rem; border-bottom:1px solid var(--line); padding:.5rem 0; }} .metrics dd {{ margin:0; font-weight:700; text-align:right; }}
 .historical {{ margin-top:1.2rem; border-top:1px solid var(--line); padding-top:.8rem; }} .historical h3 {{ margin:.2rem 0; font-size:1rem; }} .historical ul {{ padding-left:1.2rem; }} .historical li {{ margin:.7rem 0; }} .historical p {{ margin:.2rem 0; }} .older {{ text-align:center; }}
 .controls {{ padding-left:1.2rem; margin:.3rem 0 0; color:var(--muted); font-size:.88rem; }}
-@media (max-width: 700px) {{ main {{ display:block; }} .messages {{ max-height:none; }} .panel {{ padding:1rem; }} }}
+@media (max-width: 700px) {{ main {{ display:block; margin-top:1rem; }} .messages {{ max-height:none; }} .panel {{ padding:1.15rem; margin-bottom:1rem; }} }}
+@media (max-width: 480px) {{ header {{ padding:1rem; }} main {{ width:calc(100% - 1rem); }} .panel {{ padding:1rem; border-radius:16px; }} .message {{ max-width:96%; }} .old-plan-search div {{ flex-wrap:wrap; }} .old-plan-search button {{ width:100%; }} .metrics div {{ flex-wrap:wrap; }} .metrics dd {{ text-align:left; }} }}
+@media (prefers-reduced-motion: reduce) {{ html {{ scroll-behavior:auto; }} }}
 </style></head><body class="{theme}">
-<header><div class="brand">Rally · Group space</div><h1>{title}</h1><ul class="members" aria-label="Group members">{member_html}</ul></header>
-<main><section class="panel history" aria-labelledby="history-title"><h2 id="history-title">Conversation history</h2><p class="status" role="status">{status_label} · {_e(imported)} messages</p>{history}</section>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header><div class="brand">Rally · Group space</div><h1>{title}</h1><ul class="members" aria-label="Group members">{member_html}</ul><nav class="section-nav" aria-label="Portal sections"><a href="#history-title">History</a><a href="#plans-title">Plans</a><a href="#analytics-title">Analytics</a><a href="#activity-title">Activity</a><a href="#settings-title">Settings</a></nav></header>
+<main id="main-content"><section class="panel history" aria-labelledby="history-title"><h2 id="history-title">Conversation history</h2><p class="status" role="status">{status_label} · {_e(imported)} messages</p>{history}</section>
 <section class="panel" aria-labelledby="plans-title"><h2 id="plans-title">Rally plans</h2>{plans}</section>
 <section class="panel" aria-labelledby="analytics-title"><h2 id="analytics-title">Group analytics</h2>{analytics}</section>
 <section class="panel" aria-labelledby="activity-title"><h2 id="activity-title">Rally activity</h2>{activity}</section>

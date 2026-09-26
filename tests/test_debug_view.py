@@ -89,6 +89,39 @@ class DebugViewTests(unittest.TestCase):
         self.assertIn("No reservation result yet", page)
         self.assertIn("No specific blocker recorded", page)
 
+    def test_refresh_has_keyboard_landmarks_and_reduced_motion_support(self):
+        page = render_debug_view(self.plan(), None, None)
+        for expected in (
+            '<a class="skip-link" href="#main-content">Skip to plan details</a>',
+            '<nav class="section-nav" aria-label="Plan sections">',
+            'href="#conversation-signals"',
+            'href="#message-evidence"',
+            'href="#proposal"',
+            '<main id="main-content">',
+            ":focus-visible",
+            "#0A84FF",
+            "-apple-system",
+            "prefers-reduced-motion: reduce",
+            'aria-current="step"',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, page)
+
+    def test_plan_sections_keep_clear_scan_order_and_anchor_targets(self):
+        page = render_debug_view(self.plan(), None, None)
+        anchors = ("conversation-signals", "current-blocker", "message-evidence",
+                   "proposal", "reservation-result")
+        positions = [page.index(f'id="{anchor}"') for anchor in anchors]
+        self.assertEqual(positions, sorted(positions))
+        for heading in ("Conversation signals", "Current blocker", "Message evidence",
+                        "Proposal", "Latest demo reservation result"):
+            self.assertIn(f"<h2>{heading}</h2>", page)
+
+    def test_narrow_mobile_section_header_can_stack_without_overflow(self):
+        page = render_debug_view(self.plan(), None, None)
+        self.assertIn(".section-head { flex-direction:column;", page)
+        self.assertIn(".confidence { white-space:normal;", page)
+
 
 if __name__ == "__main__":
     unittest.main()
