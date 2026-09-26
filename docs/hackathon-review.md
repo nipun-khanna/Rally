@@ -56,6 +56,13 @@ Hours, team size, tracks, and demo length were placeholders. Allocate the availa
 
 ## 8. NEXT CODE CHANGES
 
+Changes 1–4 below were implemented after this review. Verification: 155 pytest tests
+and 12 subtests passed; offline replay reached DONE with two outgoing messages and
+one simulated reservation. Source escaping/group isolation, explicit approval, and
+exported stages have regression coverage. Independent code review found no
+substantive regressions. Local HTTP and stage links were checked; no browser was
+connected for visual QA. Live providers were not exercised.
+
 1. `app/debug_view.py` + `app/main.py`: resolve evidence IDs to escaped same-chat source quotes, with an explicit unavailable label. Makes reasoning inspectable. P0.
 2. `app/orchestrator.py`: default proposal says “Reply 'Book it' for the demo reservation.” Prevents an on-stage approval dead end. P0.
 3. `scripts/demo_smoke.py`: export labeled blocked/ready/done HTML from the existing renderer, evidence-tagged fixture facts, upcoming date, and competing sushi venue. Gives a deterministic browser fallback while exercising actual filtering and approval. P0.

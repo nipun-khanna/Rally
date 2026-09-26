@@ -346,7 +346,7 @@ private history export, or changes to existing user configuration. Context field
 - [x] Inspect repository, integrations, lessons, and primary planning flow.
 - [x] Independently audit model/transport dependencies and demo failure paths.
 - [x] Record the eight-section judge review in docs/hackathon-review.md.
-- [ ] Restore pinned dependencies and establish test baseline.
+- [x] Restore pinned dependencies and establish test baseline.
 - [x] Show escaped source quotes in the authenticated debug view.
 - [x] Make the proposal's explicit approval phrase discoverable.
 - [x] Export labeled offline replay snapshots using the existing smoke scenario.
@@ -358,3 +358,21 @@ private history export, or changes to existing user configuration. Context field
 - Full pytest: 155 passed, one existing dependency warning.
 - Offline smoke: DONE, one simulated reservation, two captured messages.
 - `git diff --check`: clean. Live iMessage self-test creation returned uncertain; no automatic retry. Vercel CI is not implemented.
+
+
+### Hackathon audit review results
+
+Baseline: 153 pytest tests passed after installing pinned requirements and pytest
+into the existing .venv. New source-quote, HTTP-wiring, approval-prompt, and replay
+checks first failed against the old behavior; focused checks then passed. Final
+suite: 155 passed, 12 subtests passed, one upstream Starlette/AnyIO deprecation
+warning. Offline replay reached DONE with two outbound fixture messages and one
+simulated reservation; generated three source-backed, explicitly labeled HTML
+snapshots in ignored data/demo_replay. Local HTTP response matched generated
+blocked.html; all stage links were checked. Independent review found no substantive
+correctness/security regressions. git diff --check passed.
+
+Browser discovery returned no connected browser, so rendered desktop/mobile visual
+QA remains unverified. Live model extraction, venue search, native iMessage delivery,
+and actual table booking were not tested during this audit. No messages were sent,
+private history exported, deployment changed, or live configuration modified.
