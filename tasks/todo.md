@@ -1,5 +1,27 @@
 # Rally MVP implementation tasks
 
+## Proposed group websites — full history requirement
+
+- [x] Wire a portal for each allowlisted group into the existing FastAPI service at `/{group_id}`.
+- [x] Expose a safe admin setup path and same-chat Rally link request; keep portal changes scoped to its group.
+- [x] Design a private website for each group with member names, historical messages, plans and Rally actions, and group analytics.
+- [x] Import the group's complete available iMessage history before Rally joined, in resumable pages with deduplication; keep syncing new messages afterward.
+- [x] Show import coverage and completion status so partial history does not appear complete.
+- [x] Show only Rally-tracked plans by default; let members request a search for older plans in imported messages and clearly label any inferred result as historical.
+- [x] Serve the portal at `{app_url}/{group_id}` with a random, replaceable public group ID; anyone holding the link can open it. Vercel cache and past deployment retention limit complete revocation.
+- [x] Import available historical photos, videos, and other attachments as part of full chat history; show missing media clearly.
+- [x] Add group-level controls to hide or show the message archive, media, analytics, plans, activity, and member list.
+- [x] Give the portal an iMessage-inspired visual design, especially for the message timeline, with responsive layout and readable plans and analytics.
+- [x] Define how group members request and authorize portal configuration changes through explicit Rally commands in the allowlisted chat.
+- [x] Verify the archive import, media delivery, history search, analytics, settings, and portal rendering using tests and a local running app.
+- [ ] Organize implementation into sequential commits and push to the configured GitHub remote when authentication permits.
+- [x] Use the Vercel CLI to create the user-selected `rallyplans` project and assign `rallyplans.vercel.app` with a data-free holding page; verify the production alias returns 200.
+- [x] Publish the actual group portal to that domain after explicit approval to upload the group's archived messages and media to Vercel.
+
+### Portal review — 2026-09-26
+
+The selected group import completed with 72 source messages and six available attachments; two participant names resolved from local Contacts. The live FastAPI page, a media endpoint, and the local historical-plan lookup returned 200. A labeled `Hey Rally, send our page link` test sent one prompt and received one same-thread URL reply; the published Vercel page then reflected that exchange. Vercel's production alias returned 200 for the group page, history index, and media; active attachment formats are download-only with restrictive headers. Historical-plan lookup uses local text matching and does not send archived messages to xAI. An automatic approval review rejected that proposed xAI archive call because external transfer of private history had not been specifically authorized; the local search replaced it. Vercel publication of the archive was later explicitly approved. The site is a static snapshot refreshed by the running Mac service about every five minutes; immutable deployments and caches mean old published data cannot be guaranteed erased instantly.
+
 ## Future idea — adaptable requests
 
 - [ ] Explore the user's idea that Rally should figure out how to fulfill new requests. Define its allowed tools, approval boundaries, and whether this means planning with existing capabilities or adding new capabilities. Keep this outside the current direct-address implementation.

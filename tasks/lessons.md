@@ -1,5 +1,20 @@
 # Project lessons
 
+## 2026-09-26 — Group sites need complete history
+
+- User correction: the proposed group website must reflect the full existing group history, including messages before Rally joined.
+- Rule: design a paginated historical import with resumable progress and deduplication before treating analytics as complete; distinguish imported history from the subset used for active plan decisions.
+- User clarification: use older messages for history and analytics; show only Rally-tracked plans by default, while allowing members to request older plan findings in the portal.
+- Rule: keep inferred historical plans separate from Rally's tracked plan records and label their source and uncertainty.
+- User clarification: portal access should be a simple `{app_url}/{group_id}` link that anyone holding it can open.
+- Rule: keep the requested URL shape while making the public group ID opaque and replaceable; never expose an internal BlueBubbles GUID as the access token.
+- User clarification: full history includes available media and attachments, with controls for groups that do not want every section shown.
+- Rule: model portal visibility by section and make imported media availability explicit instead of silently dropping attachments.
+- User clarification: the portal should be themed to the iMessage UI.
+- Rule: carry that visual direction into the portal design and verify it on mobile and desktop layouts.
+- User correction: use the Vercel CLI, not the browser, for domain work.
+- Rule: when the user specifies a tool surface, stay on it; diagnose its authentication and connectivity directly.
+
 ## 2026-09-26 — Verify native app stability before live transport tests
 
 - User correction: BlueBubbles setup finished, but Messages crashes while attempting live iMessage testing.

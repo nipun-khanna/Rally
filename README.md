@@ -26,6 +26,16 @@ In an allowlisted group, a member can ask `Hey Rally, what's the plan?` or `Rall
 
 Set `RALLY_ALLOWED_CHAT_GUIDS` to the exact BlueBubbles group-chat GUIDs that Rally may serve, separated by commas. It defaults to an empty set: the live backend will not ingest, schedule, or send for any group until one is configured. See [docs/demo.md](docs/demo.md) for the iMessage identity and group setup.
 
+## Group portal
+
+For each allowlisted group, Rally creates a page at `{RALLY_APP_URL}/{group_id}`. The public `group_id` is random and can be replaced; anyone holding that link can read the page. Set `RALLY_APP_URL` to the reachable base URL before asking Rally to share a link. A localhost URL works for testing on this Mac only.
+
+The portal imports the group's full history available to BlueBubbles, including message text, supported attachments, and reactions. It stores this archive separately from Rally's live planning messages. Import runs in resumable pages in the background, syncs new webhook messages, and rescans the archive hourly for missed or changed messages. The page shows import status and labels unavailable media. Historical messages feed the archive and analytics; they do **not** create Rally plan records or trigger actions.
+
+Ask `Hey Rally, send our page link` in the group. Members can also ask `Hey Rally, hide media on our page`, `show media`, `hide analytics`, `show history`, `hide plans`, `hide members`, `hide activity`, `name our page to Weekend Crew`, `set our page theme to midnight`, or `replace our page link`. After the next publish, the old production path stops working when replaced. Vercel may retain caches or old immutable deployments; the publisher removes its previous deployment, but complete erasure cannot be guaranteed. The portal's older-plan search looks for possible plan mentions in archived messages on demand, labels findings as inferred, and shows supporting messages. It runs locally or in the browser without sending archived messages to an external model. The live backend has a per-group daily search cap and cache. The main plans list contains only plans Rally tracked, along with saved proposal and action outcomes.
+
+`POST /portal/admin/{chat_id}/settings?token=...` and `POST /portal/admin/{chat_id}/import?token=...` provide authenticated local administration. The live backend depends on a persistent SQLite database, local media files, and the Mac-hosted BlueBubbles service. `python -m scripts.export_portal` builds a static snapshot in ignored `data/portal_build` without uploading it. With the group's approval to host its archive on Vercel, set `RALLY_PORTAL_PUBLISH_APPROVED=1` and `RALLY_APP_URL=https://rallyplans.vercel.app`; the running backend publishes changed snapshots about every five minutes using `scripts.publish_portal`. The hosted page is a static snapshot, so the live local page reflects changes first. Vercel serves only the exported page, local search index, and allowed media files, never `.env` or the operational SQLite database. Active attachment formats are downloads with restrictive headers.
+
 ## Test with code
 
 ```sh
