@@ -92,6 +92,17 @@ def test_web_quota_is_separate_atomic_daily_budget(tmp_path):
     assert store.consume_web_quota('2026-09-27',1)
 
 
+def test_web_quota_zero_disables_local_daily_cap(tmp_path):
+    from app.config import Settings
+    from app.store import Store
+    store=Store(tmp_path/'quota.sqlite3')
+    assert Settings.from_env({}).web_daily_limit == 0
+    assert store.consume_web_quota('2026-09-26',0)
+    assert store.consume_web_quota('2026-09-26',0)
+    assert store.consume_web_quota('2026-09-26',1)
+    assert not store.consume_web_quota('2026-09-26',1)
+
+
 def test_service_config_wires_web_budget(tmp_path):
     from app.config import Settings, build_service
     from unittest.mock import patch

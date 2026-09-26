@@ -283,6 +283,8 @@ class Store:
             return result.rowcount == 1
 
     def consume_web_quota(self, day: str, daily_limit: int) -> bool:
+        if daily_limit == 0:
+            return True
         if daily_limit < 1:
             return False
         with self._db() as db:

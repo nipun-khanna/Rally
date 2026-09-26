@@ -446,6 +446,16 @@ private history exported, deployment changed, or live configuration modified.
 
 ### Web search review
 
-- xAI web search is read-only and limited to one Responses request with at most three server-side tool calls. The local quota defaults to twenty requests per UTC day and consumes before a provider attempt; this bounds the local request budget, but provider token charges still vary.
+- xAI web search is read-only and limited to one Responses request with at most three server-side tool calls. The local daily quota defaults to unlimited (`0`); a positive configured cap consumes before a provider attempt. Provider tool and token charges still vary.
+- [x] Remove the arbitrary daily default cap, retain an optional configured cap, and update the running local configuration.
 - The classifier covers obvious public/current queries; it is not a general autonomous tool planner. A requested venue search does not prove a business is open or a table available. Calendar, contact, and code tools remain separate and require the previously planned integrations/approvals.
 - The current direct message alone goes to xAI for web research. The local style label includes no surrounding message text. Group extraction remains separate and can still time out on other messages.
+
+### Adaptive requests implementation (unassigned backend area)
+
+- [x] Ground design in docs/remaining-functionality-design.md and write docs/adaptive-requests-implementation-plan.md with boundaries to external teammate work.
+- [ ] Implement durable request/workflow store and tests.
+- [ ] Implement registry and exact approval boundary with tests.
+- [ ] Implement structured planning and inert generated-code proposals with tests.
+- [ ] Integrate explicit adaptive requests into same-chat routing without stealing existing portal/planner/web behavior.
+- [ ] Verify and document actual capability coverage, commits and live behavior.

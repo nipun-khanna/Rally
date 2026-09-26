@@ -47,7 +47,7 @@ class Settings:
     history_enabled: bool = True
     grok_extraction_timeout: float = 60
     web_enabled: bool = False
-    web_daily_limit: int = 20
+    web_daily_limit: int = 0
     web_max_tool_calls: int = 3
 
     @classmethod
@@ -58,9 +58,9 @@ class Settings:
         max_requests = int(source.get("RALLY_MAX_PLACE_REQUESTS", "100"))
         max_calendar_requests = int(source.get("RALLY_MAX_CALENDAR_REQUESTS", "20"))
         web_enabled = source.get("RALLY_WEB_ENABLED", "0") == "1"
-        web_daily_limit = int(source.get("RALLY_WEB_DAILY_LIMIT", "20"))
+        web_daily_limit = int(source.get("RALLY_WEB_DAILY_LIMIT", "0"))
         web_max_tool_calls = int(source.get("RALLY_WEB_MAX_TOOL_CALLS", "3"))
-        if not 1 <= web_daily_limit <= 1000 or not 1 <= web_max_tool_calls <= 10:
+        if not 0 <= web_daily_limit <= 1000 or not 1 <= web_max_tool_calls <= 10:
             raise ValueError("Invalid web search budget")
         calendar_enabled = source.get("RALLY_CALENDAR_ENABLED", "0") == "1"
         extraction_timeout = float(source.get("RALLY_GROK_EXTRACTION_TIMEOUT", "60"))

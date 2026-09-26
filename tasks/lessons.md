@@ -1,5 +1,10 @@
 # Project lessons
 
+## 2026-09-26 — Do not impose an arbitrary search cutoff
+
+- User correction: the twenty-per-day web search limit blocked expected Rally use.
+- Rule: distinguish a local cost guard from a provider limit. Default to usable access when the user asks for broad search, make a daily cap opt-in, and explain the remaining provider charges and per-request tool bound.
+
 ## 2026-09-26 — Separate local monitoring from Rally's identity
 
 - User correction: treating the monitored user's current iMessage profile as Rally's account does not describe a deployable personal reminder service.
