@@ -48,6 +48,10 @@ Install the test runner with `uv pip install --python .venv/bin/python pytest` (
 The smoke script exercises plan state, automatic intervention, proposal, explicit approval, mock reservation, and final report with fixed local fixtures. It makes no external calls. Add `--output-dir data/demo_replay` to export labeled browser snapshots; see [the replay steps](docs/demo.md). Live BlueBubbles, Grok, and Geoapify calls require credentials and are separate from this local smoke check.
 
 Optional Google Calendar creation is documented in [docs/calendar.md](docs/calendar.md). It is disabled by default and requires approval that explicitly includes adding a calendar event.
+### Public web research
+
+With `RALLY_WEB_ENABLED=1`, addressed public/current-information questions (for example, “Rally, find food nearby”) use xAI web search and return cited URLs in the same iMessage group. Search is read-only; it cannot book, send messages to others, create events, or run code. A persisted daily limit and per-request tool cap control usage. Only the current request and an abstract group-tone label go to this search path. Setup, cost, and limitations: [docs/web-search.md](docs/web-search.md).
+
 ### Relationship reminders
 
 Private relationship tracking, reminder scheduling, and selected-conversation

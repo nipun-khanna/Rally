@@ -433,3 +433,19 @@ private history exported, deployment changed, or live configuration modified.
 - Final full suite: 169 passed, one existing dependency warning. `git diff --check` clean.
 - Existing shared lock still spans provider calls; a longer extraction HTTP timeout can increase queue latency. HTTPX timeouts are per network phase rather than total wall-clock deadlines.
 - One real extraction diagnostic timed out at prior 25-second setting. No second replay and no real messages sent during this reliability work; live extraction success is not claimed.
+
+## Read-only web research and adaptive tone
+
+- [x] Confirm xAI Responses API web_search, citations, store=false, bounded max_tool_calls and pricing in primary docs.
+- [x] Add read-only web client with private-host citation filtering, sanitized errors, bounded tool/output counts, and tests.
+- [x] Route directly addressed public/current information requests to web search with a separate SQLite daily quota; no raw surrounding history is sent to web search.
+- [x] Infer casual/formal/neutral style locally and guide normal and web replies without imitating people.
+- [x] Verify a synthetic public query through xAI web search (7.62 seconds, public source URL) and one labeled authorized group request (same-thread outbox `sent`, source URL, 7.93 seconds). No private history sent to the web client.
+- [x] Review search/tone paths, test citation and provider-failure handling, run full suite (186 passed), restart local app, commit and push.
+
+
+### Web search review
+
+- xAI web search is read-only and limited to one Responses request with at most three server-side tool calls. The local quota defaults to twenty requests per UTC day and consumes before a provider attempt; this bounds the local request budget, but provider token charges still vary.
+- The classifier covers obvious public/current queries; it is not a general autonomous tool planner. A requested venue search does not prove a business is open or a table available. Calendar, contact, and code tools remain separate and require the previously planned integrations/approvals.
+- The current direct message alone goes to xAI for web research. The local style label includes no surrounding message text. Group extraction remains separate and can still time out on other messages.
