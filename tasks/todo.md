@@ -1,5 +1,16 @@
 # Rally MVP implementation tasks
 
+## Relationship maintenance service
+
+- [x] Inspect current scheduling, persistence, message handling, and archive-disable state.
+- [x] Draft relationship-service design with confirmed contact, learning, reminder cycles, and private data isolation.
+- [ ] Resolve delivery destination and initial learning sources; review the written design.
+- [ ] Implement relationship records and confirmed contact events with durable ownership isolation.
+- [ ] Implement setup, status, contact confirmation, cadence changes, snooze, pause, resume, and removal.
+- [ ] Implement reminder scheduling and deduplicated delivery through the selected destination.
+- [ ] Implement evidence-based cadence suggestions requiring acceptance.
+- [ ] Verify code tests, restart behavior, and live reminder delivery; commit and push verified changes.
+
 ## Finish remaining functionality — current iMessage account
 
 - [ ] Audit the PRD and existing adapters; preserve completed behavior and identify implementation gaps.
@@ -7,6 +18,7 @@
 - [ ] Prepare provider setup and credential validation for live venue search and Google Calendar.
 - [ ] Run the complete live planning loop in the authorized group when venue credentials are available; record timing and outcomes.
 - [ ] Design adaptive requests: registered tools, persistent workflows, missing-capability tracking, explicit approval for commitments, and honest failure reporting.
+- [ ] Generate proposed code for missing capabilities, persist it as a review artifact with intended behavior and validation results, and keep execution or installation pending review.
 - [ ] Implement the reviewed adaptive-request design and verify same-chat routing, durable state, and tool approval boundaries.
 - [ ] Commit and push verified changes; update the hosted portal as needed.
 
