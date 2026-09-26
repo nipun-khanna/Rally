@@ -52,6 +52,7 @@ class Settings:
     portal_publish_approved: bool = False
     history_enabled: bool = True
     grok_extraction_timeout: float = 60
+    grok_extraction_effort: str = "low"
     web_enabled: bool = False
     web_daily_limit: int = 0
     web_max_tool_calls: int = 3
@@ -75,6 +76,9 @@ class Settings:
         extraction_timeout = float(source.get("RALLY_GROK_EXTRACTION_TIMEOUT", "60"))
         if not 1 <= extraction_timeout <= 120:
             raise ValueError("Extraction timeout must be between 1 and 120 seconds")
+        extraction_effort = source.get("RALLY_GROK_EXTRACTION_EFFORT", "low").lower()
+        if extraction_effort not in ("low", "medium", "high"):
+            raise ValueError("Invalid Grok extraction reasoning effort")
         extraction_provider = source.get("RALLY_EXTRACTION_PROVIDER", "grok").lower()
         if stall_minutes < 1 or tick_seconds < 1 or not 1 <= max_requests <= 1000:
             raise ValueError("Invalid Rally interval or place request cap")
@@ -117,6 +121,7 @@ class Settings:
             portal_publish_approved=source.get("RALLY_PORTAL_PUBLISH_APPROVED", "0") == "1",
             history_enabled=source.get("RALLY_HISTORY_ENABLED", "1") == "1",
             grok_extraction_timeout=extraction_timeout,
+            grok_extraction_effort=extraction_effort,
             web_enabled=web_enabled,
             web_daily_limit=web_daily_limit,
             web_max_tool_calls=web_max_tool_calls,
@@ -130,7 +135,8 @@ def build_service(settings: Settings) -> RallyService:
     store = Store(settings.database_path)
     agent = GrokClient(settings.xai_api_key, settings.grok_model,
                        default_city=settings.default_city, time_zone=settings.time_zone,
-                       extraction_timeout=settings.grok_extraction_timeout)
+                       extraction_timeout=settings.grok_extraction_timeout,
+                       extraction_reasoning_effort=settings.grok_extraction_effort)
     extractor = (MuseExtractor(settings.meta_model_api_key,
                                default_city=settings.default_city, time_zone=settings.time_zone)
                  if settings.extraction_provider == "muse" else agent)

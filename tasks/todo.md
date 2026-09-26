@@ -15,6 +15,8 @@ The full PRD is **not complete**. No open teammate PRs were present at the last 
 
 Teammates should avoid editing `app/main.py`, `app/config.py`, and shared orchestration routes without coordinating interface changes. The dashboard, follow-up, calendar, and deployment areas remain assigned to humans. Root has already built the live BlueBubbles path, group planning foundation, web search, adaptive request registry, and inert code proposals; those are not new teammate tasks.
 
+Root reliability note: xAI Grok 4.7 defaults to high reasoning. Extraction now requests configurable low reasoning effort to reduce latency; one synthetic structured call completed in 5.01 seconds. This does not prove the live 56-message backlog can be extracted successfully. Backlog recovery remains open and must not automatically resend old direct replies.
+
 ## Relationship maintenance service
 
 ### Two-profile feasibility test
