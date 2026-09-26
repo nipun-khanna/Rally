@@ -63,9 +63,26 @@ def test_failed_recovery_acks_nothing_and_disallowed_chat_is_rejected(tmp_path):
     with pytest.raises(RuntimeError):
         rally.recover_pending('chat-a')
     assert not rally.store.is_processed('m1')
+    assert rally.store.pending_diagnostics('chat-a')['failures'] == [
+        {'stage':'extract','kind':'other','status':None,'count':1}]
     with pytest.raises(ValueError):
         rally.recover_pending('chat-b')
     assert sent == []
+
+
+def test_failed_live_extraction_records_only_sanitized_diagnostics(tmp_path):
+    from app.agent import GrokProviderError
+    rally, extractor, _ = service(tmp_path, PlanFacts())
+    message=ChatMessage('m1','chat-a','member','private message content',NOW)
+    rally.store.add_message(message)
+    extractor.fail=True
+    extractor.extract=lambda *_: (_ for _ in ()).throw(GrokProviderError('timeout','extracted'))
+    with pytest.raises(GrokProviderError):
+        rally.receive(message)
+    diagnostic=rally.store.pending_diagnostics('chat-a')
+    assert diagnostic == {'pending':1,'failures':[{'stage':'extracted','kind':'timeout','status':None,'count':1}]}
+    assert rally.store.recent_messages('chat-a')[0].text == 'private message content'
+    assert 'private message content' not in str(diagnostic)
 
 
 def test_recovery_refuses_partial_snapshot(tmp_path):

@@ -29,6 +29,17 @@ def _log_scheduled_failure(phase: str, exc: Exception):
         logger.warning("Scheduled %s failed: type=%s", phase, type(exc).__name__)
 
 
+def _failure_diagnostic(exc: Exception) -> tuple[str, str, int | None]:
+    if isinstance(exc, GrokProviderError):
+        kind = exc.kind if exc.kind in {"timeout", "http", "transport", "response"} else "other"
+        stage = exc.stage if isinstance(exc.stage, str) and exc.stage.isidentifier() else "extract"
+        status = exc.status_code if type(exc.status_code) is int else None
+        return kind, stage, status
+    if isinstance(exc, (ValueError, TypeError)):
+        return "validation", "extract", None
+    return "other", "extract", None
+
+
 class RallyService:
     def __init__(self, store: Store, agent, search_fn, send_fn, stall_minutes: int = 30,
                  extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None,
@@ -65,7 +76,11 @@ class RallyService:
             if not pending_ids:
                 return 0
             plan = self.store.get_plan(chat_id)
-            facts = self.extractor.extract(messages, plan.facts if plan else None)
+            try:
+                facts = self.extractor.extract(messages, plan.facts if plan else None)
+            except Exception as exc:
+                self._record_extraction_failure(pending_ids, exc)
+                raise
             if facts.activity:
                 if (not plan or plan.state not in ("DONE", "ABANDONED") or
                         (facts.activity, facts.goal, facts.date) !=
@@ -140,7 +155,11 @@ class RallyService:
             if portal_answer is not None:
                 self.store.mark_processed(message.message_id)
                 return True
-        facts = self.extractor.extract(messages, plan.facts if plan else None)
+        try:
+            facts = self.extractor.extract(messages, plan.facts if plan else None)
+        except Exception as exc:
+            self._record_extraction_failure([message.message_id], exc)
+            raise
         if facts.activity:
             if not plan or plan.state not in ("DONE", "ABANDONED") or (
                     facts.activity, facts.goal, facts.date) != (
@@ -148,6 +167,15 @@ class RallyService:
                 plan = self.store.save_plan(message.chat_id, facts, message.sent_at)
         self.store.mark_processed(message.message_id)
         return True
+
+    def _record_extraction_failure(self, message_ids: list[str], exc: Exception):
+        kind, stage, status_code = _failure_diagnostic(exc)
+        for message_id in message_ids:
+            try:
+                self.store.record_processing_failure(message_id, kind=kind,
+                                                     stage=stage, status_code=status_code)
+            except Exception as diagnostic_error:
+                _log_scheduled_failure("processing diagnostic", diagnostic_error)
 
     def tick(self, now: datetime | None = None) -> int:
         with self._lock:

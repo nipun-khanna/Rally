@@ -51,6 +51,14 @@ class Store:
             """)
             if "processed" not in {row[1] for row in db.execute("PRAGMA table_info(messages)")}:
                 db.execute("ALTER TABLE messages ADD COLUMN processed INTEGER NOT NULL DEFAULT 0")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+            for name, declaration in (
+                ("processing_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_error_kind", "TEXT"), ("last_error_stage", "TEXT"),
+                ("last_error_status", "INTEGER"),
+            ):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE messages ADD COLUMN {name} {declaration}")
             if "created_at" not in {row[1] for row in db.execute("PRAGMA table_info(proposals)")}:
                 db.execute("ALTER TABLE proposals ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
             if "includes_calendar" not in {row[1] for row in db.execute("PRAGMA table_info(approvals)")}:
@@ -85,6 +93,27 @@ class Store:
     def mark_processed(self, message_id: str):
         with self._db() as db:
             db.execute("UPDATE messages SET processed=1 WHERE message_id=?", (message_id,))
+
+    def record_processing_failure(self, message_id: str, *, kind: str,
+                                  stage: str = "extract", status_code: int | None = None):
+        allowed = {"timeout", "http", "transport", "response", "validation", "other"}
+        if kind not in allowed or not isinstance(stage, str) or len(stage) > 40:
+            raise ValueError("Invalid sanitized processing diagnostic")
+        if status_code is not None and (type(status_code) is not int or not 100 <= status_code <= 599):
+            raise ValueError("Invalid provider status")
+        with self._db() as db:
+            db.execute("""UPDATE messages SET processing_attempts=processing_attempts+1,
+                last_error_kind=?,last_error_stage=?,last_error_status=? WHERE message_id=? AND processed=0""",
+                (kind, stage, status_code, message_id))
+
+    def pending_diagnostics(self, chat_id: str) -> dict:
+        with self._db() as db:
+            rows = db.execute("""SELECT coalesce(last_error_stage,'unknown') stage,
+                coalesce(last_error_kind,'not_recorded') kind, last_error_status status, count(*) count
+                FROM messages WHERE chat_id=? AND processed=0 AND is_from_rally=0
+                GROUP BY stage,kind,status""", (chat_id,)).fetchall()
+        return {'pending': sum(row['count'] for row in rows),
+                'failures': [dict(row) for row in rows]}
 
     def recovery_snapshot(self, chat_id: str, limit: int = 75) -> tuple[list[ChatMessage], list[str]]:
         """Return every message since the oldest pending one, or refuse a partial snapshot."""

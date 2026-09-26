@@ -23,6 +23,7 @@ Root reliability note: xAI Grok 4.7 defaults to high reasoning. Extraction now r
 - [x] Add an explicit recovery operation that extracts the complete bounded group snapshot once, updates the active plan, then marks only covered pending messages processed. It must not call direct-reply, booking, calendar, or outbound send paths.
 - [x] Verify success, provider failure, changed proposal terms, disallowed chat, duplicate invocation, and oversized backlog with fixture tests.
 - [x] Provide a local operator command showing the pending count and requiring an explicit run flag.
+- [x] Record sanitized failure stage/kind/status for future failed extractions; existing 56 messages predate this field and remain `not_recorded`.
 - [ ] Run recovery on the existing live group backlog and confirm pending count returns to zero.
 - [ ] Recheck the live pending count after operator-approved recovery, then push the verified implementation.
 

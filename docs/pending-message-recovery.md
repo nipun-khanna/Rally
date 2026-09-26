@@ -9,8 +9,10 @@ Recovery is a local operator action. Load `.env` into the shell as described in 
 .venv/bin/python -m scripts.recover_pending run --apply
 ```
 
-`status` prints the pending human-message count. `run` requires `--apply`; it sends the bounded stored conversation window for the one allowlisted group to the configured extractor. The default recovery window is 75 total messages and the command refuses a partial window. Use `--chat-id` only when more than one group is allowlisted, and `--limit` to set a reviewed window size.
+`status` prints the pending human-message count and sanitized extraction error categories. The current old backlog predates this diagnostic field, so it appears as `not_recorded`. `run` requires `--apply`; it sends the bounded stored conversation window for the one allowlisted group to the configured extractor. The default recovery window is 75 total messages and the command refuses a partial window. Use `--chat-id` only when more than one group is allowlisted, and `--limit` to set a reviewed window size.
 
 Recovery calls only the extractor, updates the current plan through normal versioning, and then marks the covered pending human messages processed. It never sends a direct reply, books a venue, creates a calendar event, or processes old approval phrases. A provider failure leaves the messages pending. The command replaces the send function with a hard failure as a guard against accidental outbound messages.
+
+New extraction failures record only attempt count, stage, broad error kind and optional HTTP status. Message text and provider response bodies are not copied into these diagnostics.
 
 This is intended for a bounded backlog. Large or ongoing backlogs need slicing with a persisted cursor and retry backoff before automatic recovery is enabled.
