@@ -17,6 +17,15 @@ Teammates should avoid editing `app/main.py`, `app/config.py`, and shared orches
 
 Root reliability note: xAI Grok 4.7 defaults to high reasoning. Extraction now requests configurable low reasoning effort to reduce latency; one synthetic structured call completed in 5.01 seconds. This does not prove the live 56-message backlog can be extracted successfully. Backlog recovery remains open and must not automatically resend old direct replies.
 
+### Root backlog recovery plan
+
+- [x] Add a read-only pending-message snapshot and atomic processed-ID update. Never infer that messages outside the extracted snapshot were processed.
+- [x] Add an explicit recovery operation that extracts the complete bounded group snapshot once, updates the active plan, then marks only covered pending messages processed. It must not call direct-reply, booking, calendar, or outbound send paths.
+- [x] Verify success, provider failure, changed proposal terms, disallowed chat, duplicate invocation, and oversized backlog with fixture tests.
+- [x] Provide a local operator command showing the pending count and requiring an explicit run flag.
+- [ ] Run recovery on the existing live group backlog and confirm pending count returns to zero.
+- [ ] Recheck the live pending count after operator-approved recovery, then push the verified implementation.
+
 ## Relationship maintenance service
 
 ### Two-profile feasibility test

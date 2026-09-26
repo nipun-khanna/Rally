@@ -56,6 +56,24 @@ class RallyService:
         with self._lock:
             return self._receive(message)
 
+    def recover_pending(self, chat_id: str, *, limit: int = 75) -> int:
+        """Re-extract a bounded pending window without replaying replies or actions."""
+        with self._lock:
+            if not self._chat_allowed(chat_id):
+                raise ValueError("Chat is not allowed")
+            messages, pending_ids = self.store.recovery_snapshot(chat_id, limit)
+            if not pending_ids:
+                return 0
+            plan = self.store.get_plan(chat_id)
+            facts = self.extractor.extract(messages, plan.facts if plan else None)
+            if facts.activity:
+                if (not plan or plan.state not in ("DONE", "ABANDONED") or
+                        (facts.activity, facts.goal, facts.date) !=
+                        (plan.facts.activity, plan.facts.goal, plan.facts.date)):
+                    latest_human = max(message.sent_at for message in messages if not message.is_from_rally)
+                    self.store.save_plan(chat_id, facts, latest_human)
+            return self.store.mark_processed_many(chat_id, pending_ids)
+
     def _receive(self, message: ChatMessage) -> bool:
         if not self._chat_allowed(message.chat_id) or message.is_from_rally or not message.text.strip():
             return False
