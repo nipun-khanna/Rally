@@ -140,7 +140,20 @@ class RallyService:
             if portal_answer is not None:
                 self.store.mark_processed(message.message_id)
                 return True
-        facts = self.extractor.extract(messages, plan.facts if plan else None)
+        try:
+            facts = self.extractor.extract(messages, plan.facts if plan else None)
+        except Exception as exc:
+            if isinstance(exc, GrokProviderError):
+                kind = exc.kind if exc.kind in {"timeout", "http", "transport", "response"} else "other"
+                stage = exc.stage if isinstance(exc.stage, str) and exc.stage.isidentifier() else "extract"
+                status_code = exc.status_code if type(exc.status_code) is int else None
+            elif isinstance(exc, (ValueError, TypeError)):
+                kind, stage, status_code = "validation", "extract", None
+            else:
+                kind, stage, status_code = "other", "extract", None
+            self.store.record_processing_failure(message.message_id, kind=kind,
+                                                 stage=stage, status_code=status_code)
+            raise
         if facts.activity:
             if not plan or plan.state not in ("DONE", "ABANDONED") or (
                     facts.activity, facts.goal, facts.date) != (

@@ -26,7 +26,7 @@ def main(argv=None) -> int:
     store = Store(settings.database_path)
     before = store.pending_count(chat_id)
     if args.command == 'status':
-        print(json.dumps({'pending': before, 'would_send_messages': False}))
+        print(json.dumps({**store.pending_diagnostics(chat_id), 'would_send_messages': False}))
         return 0
     if not args.apply:
         parser.error('run requires --apply; this sends current group context to the configured extractor')
