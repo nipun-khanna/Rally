@@ -86,15 +86,18 @@ def _relative_date(text: str, sent_at: date) -> date | None:
 class GrokClient:
     def __init__(self, api_key: str, model: str = "grok-4.7", transport: Callable | None = None,
                  default_city: str = "", time_zone: str = "America/New_York",
-                 extraction_timeout: float = 60):
+                 extraction_timeout: float = 60, extraction_reasoning_effort: str = "low"):
         if not 1 <= extraction_timeout <= 120:
             raise ValueError("Extraction timeout must be between 1 and 120 seconds")
+        if extraction_reasoning_effort not in ("low", "medium", "high"):
+            raise ValueError("Invalid extraction reasoning effort")
         self.api_key = api_key
         self.model = model
         self.transport = transport
         self.default_city = default_city
         self.time_zone = ZoneInfo(time_zone)
         self.extraction_timeout = extraction_timeout
+        self.extraction_reasoning_effort = extraction_reasoning_effort
 
     def _call(self, schema: type[BaseModel], prompt: str, data: dict) -> dict:
         payload = {
@@ -106,6 +109,10 @@ class GrokClient:
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": schema.__name__.lower(), "strict": True, "schema": schema.model_json_schema()}},
         }
+        # xAI supports this on Grok 4.5–4.7. Other model IDs keep their
+        # existing payload so custom deployments do not receive an unknown field.
+        if schema is Extracted and self.model in ("grok-4.5", "grok-4.6", "grok-4.7"):
+            payload["reasoning_effort"] = self.extraction_reasoning_effort
         if self.transport:
             return self.transport(payload)
         if not self.api_key:

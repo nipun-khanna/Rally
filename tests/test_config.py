@@ -20,6 +20,11 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(settings.demo_mode)
             self.assertTrue(settings.demo_venues)
             self.assertEqual(settings.allowed_chat_ids, frozenset())
+            self.assertEqual(settings.grok_extraction_effort, "low")
+            self.assertEqual(Settings.from_env({"RALLY_GROK_EXTRACTION_EFFORT":"MEDIUM"}).grok_extraction_effort,
+                             "medium")
+            with self.assertRaises(ValueError):
+                Settings.from_env({"RALLY_GROK_EXTRACTION_EFFORT":"none"})
             chosen = Settings.from_env({"RALLY_ALLOWED_CHAT_GUIDS": "any;+;chat1, any;+;chat2"})
             self.assertEqual(chosen.allowed_chat_ids, frozenset({"any;+;chat1", "any;+;chat2"}))
             with self.assertRaises(ValueError):

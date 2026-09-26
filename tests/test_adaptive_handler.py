@@ -42,6 +42,23 @@ def test_read_step_is_executed_once_in_same_chat(tmp_path):
     assert calls==['chat-a']
 
 
+def test_read_failure_is_failed_not_uncertain(tmp_path):
+    tools=ToolRegistry({'chat-a'})
+    def fail(chat_id,args): raise RuntimeError('read unavailable')
+    tools.register(ToolSpec('read',{},'read',fail))
+    planner=AdaptivePlanner(lambda *_:{'steps':[{'tool':'read','args':{}}],
+                                        'missing_capability':None})
+    store=AdaptiveStore(tmp_path/'state.sqlite3')
+    handler=AdaptiveHandler(store,planner,tools)
+    message=ChatMessage('m1','chat-a','member','Rally, use tools to read',
+                        datetime.now(timezone.utc))
+    import pytest
+    with pytest.raises(RuntimeError):
+        handler.answer(message)
+    assert store.create_request('chat-a','m1',message.text)['status']=='failed'
+    assert 'failed' in handler.answer(message)
+
+
 def test_missing_capability_generates_inert_review_artifact(tmp_path):
     from app.adaptive.proposals import CapabilityProposalStore
     from app.adaptive.generator import CapabilityProposalGenerator
@@ -85,6 +102,23 @@ def test_existing_direct_routes_keep_priority_and_adaptive_reply_is_same_chat(tm
     assert not service.receive(message)
     assert handler.calls==['m1']
     assert sent==[('chat-a','Rally: adaptive reply')]
+
+
+def test_build_request_with_search_words_still_uses_adaptive_route(tmp_path):
+    from app.orchestrator import RallyService
+    from app.store import Store
+    class Agent: pass
+    class Handler:
+        def answer(self,message): return 'adaptive route'
+    sent=[]
+    service=RallyService(Store(tmp_path/'messages.sqlite3'),Agent(),lambda _:[],
+                         lambda chat,text:sent.append(text),allowed_chat_ids={'chat-a'},
+                         adaptive_handler=Handler(),
+                         web_answer_fn=lambda request,**kwargs:'web route')
+    message=ChatMessage('m1','chat-a','member',
+                        'Rally, build a website to search news',datetime.now(timezone.utc))
+    assert service.receive(message)
+    assert sent==['Rally: adaptive route']
 
 
 def test_review_route_requires_local_admin_token_and_excludes_public_portal(tmp_path):

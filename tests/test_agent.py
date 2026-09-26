@@ -3,7 +3,7 @@ from unittest.mock import patch
 import httpx
 from datetime import datetime, timezone
 
-from app.agent import GrokClient
+from app.agent import DirectAnswer, Extracted, GrokClient
 from app.models import ChatMessage, PlanFacts
 
 
@@ -48,6 +48,21 @@ class AgentTests(unittest.TestCase):
         for timeout in (0, 121, float('nan')):
             with self.assertRaises(ValueError):
                 GrokClient('key', extraction_timeout=timeout)
+
+    def test_extraction_uses_low_reasoning_only_on_supported_models(self):
+        captured = []
+        client = GrokClient('key', transport=lambda payload: captured.append(payload) or {},
+                            extraction_reasoning_effort='low')
+        client._call(Extracted, 'extract', {})
+        client._call(DirectAnswer, 'answer', {})
+        self.assertEqual(captured[0]['reasoning_effort'], 'low')
+        self.assertNotIn('reasoning_effort', captured[1])
+        unsupported = GrokClient('key', model='grok-4', transport=lambda payload: captured.append(payload) or {})
+        unsupported._call(Extracted, 'extract', {})
+        self.assertNotIn('reasoning_effort', captured[2])
+        for effort in ('none', 'xhigh', ''):
+            with self.assertRaises(ValueError):
+                GrokClient('key', extraction_reasoning_effort=effort)
 
     def test_direct_answer_uses_group_context_and_validates_text(self):
         calls = []
