@@ -6,6 +6,26 @@ from app.store import Store
 from scripts.export_portal import export_portal
 
 
+def test_selected_relationship_sources_are_never_exported(tmp_path):
+    from datetime import datetime, timezone
+    from app.relationships.store import RelationshipStore
+    db = tmp_path / 'r.sqlite3'
+    Store(db)
+    portal = PortalStore(db)
+    chat = 'iMessage;+;group'
+    public_id = portal.ensure_group(chat)
+    private = RelationshipStore(db)
+    private.configure('owner', 'iMessage;-;private', 'UTC')
+    private.upsert('owner', 'Secret Friend', 'message', 7, datetime.now(timezone.utc))
+    private.add_source('owner', chat, 'Secret Friend')
+    portal.upsert_messages(chat, [{'message_id': 'old', 'sender_id': 'person',
+                                  'text': 'old private message', 'sent_at': '2026-09-25'}])
+    output = tmp_path / 'portal_build'
+    summary = export_portal(db, tmp_path / 'media', {chat}, output)
+    assert summary['groups'] == 0
+    assert not (output / public_id).exists()
+
+
 def test_export_contains_all_pages_and_visible_media_only(tmp_path):
     db = tmp_path / "rally.sqlite3"
     Store(db)

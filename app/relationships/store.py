@@ -18,7 +18,7 @@ def stamp(value: datetime) -> str:
 
 
 class RelationshipStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, recover: bool = True):
         self.path = Path(path)
         self._local = local()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +58,8 @@ class RelationshipStore:
                     PRIMARY KEY(owner,chat_id,message_id));
             ''')
             # A prior process may have died after the transport accepted a send.
-            db.execute("UPDATE rel_outbox SET status='uncertain' WHERE status='sending'")
+            if recover:
+                db.execute("UPDATE rel_outbox SET status='uncertain' WHERE status='sending'")
 
     @contextmanager
     def db(self):
@@ -225,6 +226,10 @@ class RelationshipStore:
                 if not self._valid(db, row):
                     db.execute("UPDATE rel_outbox SET status='canceled' WHERE id=?", (row['id'],))
                     continue
+                if row['person_id']:
+                    config = db.execute('SELECT zone,hour FROM rel_config WHERE owner=?', (row['owner'],)).fetchone()
+                    if now.astimezone(ZoneInfo(config['zone'])).hour < config['hour']:
+                        continue
                 db.execute("UPDATE rel_outbox SET status='sending' WHERE id=?", (row['id'],))
                 return dict(row)
         return None
@@ -259,7 +264,10 @@ class RelationshipStore:
             existing = db.execute('SELECT * FROM rel_sources WHERE owner=? AND chat_id=?', (owner, chat_id)).fetchone()
             if existing:
                 raise ValueError('Source already selected; remove it before changing its relationship')
-            db.execute('INSERT INTO rel_sources(owner,chat_id,person_id) VALUES(?,?,?)', (owner, chat_id, person['id']))
+            # A fresh token prevents a removed/recreated selection matching an old fetch.
+            token = uuid4().int & ((1 << 62) - 1)
+            db.execute('INSERT INTO rel_sources(owner,chat_id,person_id,revision) VALUES(?,?,?,?)',
+                       (owner, chat_id, person['id'], token))
 
     def set_source(self, owner: str, chat_id: str, action: str):
         if action not in ('disable', 'enable', 'remove'):

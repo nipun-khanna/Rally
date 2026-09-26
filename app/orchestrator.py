@@ -29,7 +29,10 @@ class RallyService:
         self._lock = RLock()
 
     def _chat_allowed(self, chat_id: str) -> bool:
-        return self.allowed_chat_ids is None or chat_id in self.allowed_chat_ids
+        excluded = getattr(self, 'excluded_chat_ids', frozenset())
+        excluded = excluded() if callable(excluded) else excluded
+        return (chat_id not in excluded and
+                (self.allowed_chat_ids is None or chat_id in self.allowed_chat_ids))
 
     def receive(self, message: ChatMessage) -> bool:
         with self._lock:

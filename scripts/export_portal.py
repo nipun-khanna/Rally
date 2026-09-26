@@ -106,10 +106,20 @@ def export_portal(database_path: str | Path, media_root: str | Path,
     (output / ".vercelignore").write_text(".env*\n.vercel\n", encoding="utf-8")
     (output / "vercel.json").write_text(json.dumps(VERCEL_CONFIG), encoding="utf-8")
     portal_store = PortalStore(database_path)
+    # Read selections without constructing a service or recovering in-flight sends.
+    with portal_store._db() as db:
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        private_chats = set()
+        if 'rel_sources' in tables:
+            private_chats.update(r[0] for r in db.execute('SELECT chat_id FROM rel_sources'))
+        if 'rel_config' in tables:
+            private_chats.update(r[0] for r in db.execute('SELECT destination FROM rel_config'))
     service = _Service(Store(database_path))
     media_base = Path(media_root).resolve()
     summary = {"groups": 0, "pages": 0, "media": 0}
     for chat_id in sorted(allowed_chat_ids):
+        if chat_id in private_chats:
+            continue
         group = portal_store.group_for_chat(chat_id)
         if group is None:
             continue

@@ -88,3 +88,10 @@ def test_configuration_and_frequency_validation(store):
     with pytest.raises(ValueError):
         store.confirm('other', 'Mom', 'call', NOW, 'bad')
 
+
+def test_pending_reminder_respects_window_after_restart(store):
+    store.upsert('owner', 'Mom', 'call', 7, NOW)
+    due = NOW + timedelta(days=7)
+    store.enqueue_due(due)
+    assert store.claim_delivery(due + timedelta(hours=14)) is None
+    assert store.claim_delivery(due + timedelta(days=1)) is not None

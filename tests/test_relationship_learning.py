@@ -89,6 +89,20 @@ def test_disabling_during_fetch_prevents_ingestion(tmp_path):
         assert db.execute('SELECT COUNT(*) FROM rel_texts').fetchone()[0] == 0
 
 
+def test_remove_and_reselect_during_fetch_rejects_stale_page(tmp_path):
+    store, learner = setup(tmp_path)
+    store.upsert(OWNER, 'Other Friend', 'message', 7, NOW)
+    class ReplacingClient:
+        def fetch_messages(self, chat_id, limit, offset):
+            store.set_source(OWNER, CHAT, 'remove')
+            store.add_source(OWNER, CHAT, 'Other Friend')
+            return [item(1)]
+    learner.client = ReplacingClient()
+    assert learner.import_page(OWNER, CHAT) == 0
+    assert store.list_relationships(OWNER)[1]['last_confirmed_at'] is None
+    assert store.sources(OWNER)[0]['coverage'] == 'pending'
+
+
 def test_live_contact_cancels_stale_due_message_only(tmp_path):
     store, learner = setup(tmp_path, Pages([]))
     learner.import_page(OWNER, CHAT)
@@ -128,3 +142,10 @@ def test_suggestions_require_acceptance_and_stay_channel_specific(tmp_path):
     for day in (0, 5, 10, 15):
         store.confirm(OWNER, 'Friend', 'call', NOW + timedelta(days=day), f'call{day}')
     assert learner.suggestion(OWNER, 'Friend')['days'] == 5
+
+
+def test_malformed_source_webhooks_do_not_create_evidence(tmp_path):
+    store, learner = setup(tmp_path)
+    learner.observe({'type': 'new-message', 'data': item(1, mine=False, handle=['invalid'])})
+    learner.observe({'type': 'new-message', 'data': item(2, chats=None)})
+    assert store.list_relationships(OWNER)[0]['last_confirmed_at'] is None

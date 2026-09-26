@@ -46,3 +46,9 @@ Ask `Hey Rally, send our page link` in the group. Members can also ask `Hey Rall
 The smoke script exercises plan state, automatic intervention, proposal, explicit approval, mock reservation, and final report with fixed local fixtures. It makes no external calls. Live BlueBubbles, Grok, and Geoapify calls require credentials and are separate from this local smoke check.
 
 Optional Google Calendar creation is documented in [docs/calendar.md](docs/calendar.md). It is disabled by default and requires approval that explicitly includes adding a calendar event.
+### Relationship reminders
+
+Private relationship tracking, reminder scheduling, and selected-conversation
+learning are documented in [relationship setup](docs/relationship-setup.md).
+Monitoring runs on your Mac without sending selected texts to Grok. Configure a
+private destination and choose sources explicitly; neither is enabled by default.

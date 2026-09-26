@@ -23,7 +23,12 @@ class RelationshipLearner:
         except (ValueError, OverflowError, OSError):
             return None
         text = text if isinstance(text, str) else ''
-        sender = 'local-imessage-account' if item['isFromMe'] else (item.get('handle') or {}).get('address', '')
+        handle = item.get('handle')
+        if not item['isFromMe'] and not isinstance(handle, dict):
+            return None
+        sender = 'local-imessage-account' if item['isFromMe'] else handle.get('address', '')
+        if not isinstance(sender, str):
+            return None
         deleted = bool(item.get('isDeleted') or item.get('dateRetracted'))
         usable = bool(sender == owner and text.strip() and not deleted and not item.get('associatedMessageType') and not re.match(r'^\s*Rally\s*:', text, re.I))
         return guid, '' if deleted else text, sender, stamp(at), int(usable)
@@ -79,7 +84,10 @@ class RelationshipLearner:
         data = payload.get('data')
         if not isinstance(data, dict):
             return
-        chats = {c.get('guid') for c in data.get('chats', []) if isinstance(c, dict)}
+        raw_chats = data.get('chats')
+        if not isinstance(raw_chats, list):
+            return
+        chats = {c['guid'] for c in raw_chats if isinstance(c, dict) and isinstance(c.get('guid'), str)}
         with self.store.db() as db:
             for row in db.execute('SELECT * FROM rel_sources WHERE enabled=1').fetchall():
                 source = dict(row)

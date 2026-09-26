@@ -6,12 +6,26 @@
 - [x] Draft relationship-service design with confirmed contact, learning, reminder cycles, and private data isolation.
 - [x] Review written design: private Rally conversation and explicitly selected learning conversations approved.
 - [x] Write implementation plan covering private persistence, commands, learning, setup, and verification.
-- [ ] Review implementation plan and confirm execution approach.
-- [ ] Implement relationship records and confirmed contact events with durable ownership isolation.
-- [ ] Implement setup, status, contact confirmation, cadence changes, snooze, pause, resume, and removal.
-- [ ] Implement reminder scheduling and deduplicated delivery through the selected destination.
-- [ ] Implement evidence-based cadence suggestions requiring acceptance.
+- [x] Review implementation plan and confirm native execution approach.
+- [x] Implement relationship records and confirmed contact events with durable ownership isolation.
+- [x] Implement setup, status, contact confirmation, cadence changes, snooze, pause, resume, and removal.
+- [x] Implement reminder scheduling and deduplicated delivery through a configured private destination.
+- [x] Implement local selected-conversation learning and evidence-based cadence suggestions requiring acceptance.
+- [x] Independent code review; reproduce and fix source re-selection and queued group-delivery privacy races.
+- [ ] Configure the user's exact private destination and explicitly selected sources; verify live personal reminder receipt.
 - [ ] Verify code tests, restart behavior, and live reminder delivery; commit and push verified changes.
+
+### Relationship verification — 2026-09-26
+
+153 tests pass, including private routing, owner/channel isolation, contact rhythms,
+source disable/remove and reconciliation, stale-import rejection, portal exclusion,
+local time windows, delivery deduplication, crash recovery, and configuration changes.
+Independent review findings were reproduced and fixed. Local `/health` returns
+200 after restart. Personal configuration currently has zero destinations and zero
+sources; no personal texts were read and no personal iMessage was sent. Live private
+delivery remains unverified until the user identifies its destination and selects
+learning conversations. Monitoring is local deterministic analysis, not a local LLM;
+selected source texts are excluded from Grok and portal exports.
 
 ## Finish remaining functionality — current iMessage account
 

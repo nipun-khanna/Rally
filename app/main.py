@@ -28,7 +28,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
                tick_seconds: int | None = None, portal_store: PortalStore | None = None,
                history_client: BlueBubblesHistoryClient | None = None,
                app_url: str | None = None, media_root: str | Path | None = None,
-               history_enabled: bool = True) -> FastAPI:
+               history_enabled: bool = True, relationship_service=None) -> FastAPI:
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -42,6 +42,15 @@ def create_app(service=None, *, webhook_token: str | None = None,
             history_client = BlueBubblesHistoryClient(settings.bluebubbles_url,
                                                        settings.bluebubbles_password)
         publish_enabled = settings.portal_publish_approved
+        if relationship_service is None:
+            from app.relationships.store import RelationshipStore
+            from app.relationships.learning import RelationshipLearner
+            from app.relationships.service import RelationshipService
+            private_store = RelationshipStore(service.store.path)
+            private_client = (BlueBubblesHistoryClient(settings.bluebubbles_url, settings.bluebubbles_password)
+                              if settings.bluebubbles_url and settings.bluebubbles_password else None)
+            relationship_service = RelationshipService(private_store, service.send_fn,
+                                                       RelationshipLearner(private_store, private_client))
     else:
         publish_enabled = False
     tick_seconds = tick_seconds or 60
@@ -55,10 +64,20 @@ def create_app(service=None, *, webhook_token: str | None = None,
     if app_url:
         service.portal_handler = lambda message: portal_reply(message, portal_store, app_url)
 
+    def personal_chat_ids():
+        if not relationship_service:
+            return set()
+        return ({c['destination'] for c in relationship_service.store.configs()} |
+                {s['chat_id'] for s in relationship_service.store.sources()})
+
+    service.excluded_chat_ids = personal_chat_ids
+
     def import_one_page():
         if importer is None:
             return
         for chat_id in allowed_chats:
+            if chat_id in personal_chat_ids():
+                continue
             portal_store.ensure_group(chat_id)
             state = portal_store.import_state(chat_id)
             if state["status"] == "complete" and state["updated_at"]:
@@ -87,6 +106,10 @@ def create_app(service=None, *, webhook_token: str | None = None,
             await asyncio.sleep(tick_seconds)
             ticks += 1
             try:
+                if relationship_service:
+                    if relationship_service.learner:
+                        await asyncio.to_thread(relationship_service.learner.sync)
+                    await asyncio.to_thread(relationship_service.tick)
                 await asyncio.to_thread(service.tick)
             except Exception:
                 logger.exception("Scheduled plan evaluation failed")
@@ -123,6 +146,24 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.post("/webhooks/bluebubbles")
     def webhook(payload: dict, token: str | None = None):
         authorize(token)
+        if relationship_service:
+            private_destinations = {c['destination'] for c in relationship_service.store.configs()}
+            incoming_private = normalize_webhook(payload, allowed_direct_chat_ids=private_destinations)
+            if incoming_private and incoming_private.chat_id in private_destinations:
+                try:
+                    return {'accepted': relationship_service.receive(ChatMessage(**incoming_private.__dict__))}
+                except Exception:
+                    raise HTTPException(503, 'Rally could not process this private request') from None
+            if relationship_service.learner:
+                relationship_service.learner.observe(payload)
+            data = payload.get('data')
+            if isinstance(data, dict) and any(isinstance(c, dict) and c.get('guid') in private_destinations
+                                              for c in data.get('chats') or []):
+                return {'accepted': False}
+            if isinstance(data, dict) and any(isinstance(c, dict) and c.get('guid') in personal_chat_ids()
+                                              for c in data.get('chats') or []):
+                # Selected conversations are private learning sources, not LLM planning input.
+                return {'accepted': payload.get('type') in ('new-message', 'updated-message', 'message-updated')}
         data = payload.get("data")
         if history_enabled and payload.get("type") == "new-message" and isinstance(data, dict):
             for chat in data.get("chats") or []:
@@ -146,6 +187,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
         authorize(token)
         if not demo_mode:
             raise HTTPException(404, "Demo trigger disabled")
+        if chat_id in personal_chat_ids():
+            raise HTTPException(404, 'Personal conversation is excluded from group planning')
         return {"intervened": service.evaluate(chat_id)}
 
     @app.get("/debug", response_class=HTMLResponse)
@@ -161,7 +204,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.post("/portal/admin/{chat_id}/import")
     def import_history(chat_id: str, token: str | None = None):
         authorize(token)
-        if chat_id not in allowed_chats or importer is None:
+        if chat_id not in allowed_chats or chat_id in personal_chat_ids() or importer is None:
             raise HTTPException(404, "History import unavailable")
         return {"imported": importer.import_page(chat_id),
                 "state": portal_store.import_state(chat_id)}
@@ -169,7 +212,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.post("/portal/admin/{chat_id}/settings")
     def update_portal_settings(chat_id: str, updates: dict, token: str | None = None):
         authorize(token)
-        if chat_id not in allowed_chats:
+        if chat_id not in allowed_chats or chat_id in personal_chat_ids():
             raise HTTPException(404, "Group not found")
         try:
             return portal_store.update_settings(chat_id, title=updates.get("title"),
@@ -181,7 +224,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.get("/{group_id}/media/{attachment_id}")
     def portal_media(group_id: str, attachment_id: str):
         group = portal_store.get_group(group_id)
-        if group is None or group["chat_id"] not in allowed_chats or not group["sections"].get("history", True) or not group["sections"].get("media", True):
+        if group is None or group['chat_id'] in personal_chat_ids() or group["chat_id"] not in allowed_chats or not group["sections"].get("history", True) or not group["sections"].get("media", True):
             raise HTTPException(404, "Media not found")
         item = portal_store.get_attachment(group["chat_id"], attachment_id)
         if not item or item["status"] != "available" or not item["local_path"]:
@@ -196,7 +239,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     def portal(group_id: str, before: str | None = None,
                old_plan_query: str | None = None):
         group = portal_store.get_group(group_id)
-        if group is None or group["chat_id"] not in allowed_chats:
+        if group is None or group['chat_id'] in personal_chat_ids() or group["chat_id"] not in allowed_chats:
             raise HTTPException(404, "Group not found")
         return HTMLResponse(render_portal(build_portal_data(
             service, portal_store, group, before=before, old_plan_query=old_plan_query)))

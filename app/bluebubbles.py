@@ -32,7 +32,7 @@ class DeliveryUncertainError(RuntimeError):
     """BlueBubbles may have accepted a message despite a failed response."""
 
 
-def normalize_webhook(payload: Any) -> IncomingMessage | None:
+def normalize_webhook(payload: Any, *, allowed_direct_chat_ids=frozenset()) -> IncomingMessage | None:
     """Return a usable human group message, or ``None`` for other events."""
     if not isinstance(payload, dict) or payload.get("type") != "new-message":
         return None
@@ -69,7 +69,7 @@ def normalize_webhook(payload: Any) -> IncomingMessage | None:
         chat_id = chat.get("guid")
         if not isinstance(chat_id, str) or not chat_id.strip():
             continue
-        if ";+;" not in chat_id:
+        if ";+;" not in chat_id and chat_id not in allowed_direct_chat_ids:
             continue
         try:
             sent_at = datetime.fromtimestamp(sent_at_ms / 1000, timezone.utc)
