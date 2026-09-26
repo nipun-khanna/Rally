@@ -68,6 +68,8 @@
 
 - User correction: GitHub-to-Vercel deployment is for other developers working on the website.
 - Rule: separate website code previews and production deployment from local chat-data publication; do not propose a Mac runner for frontend collaboration.
+- User correction: defer the GitHub Actions pipeline and deploy manually as needed.
+- Rule: stop CI implementation when the user changes deployment mode. Document the manual CLI path, identify the existing Vercel project's purpose, and avoid creating an extra project or workflow without a renewed request.
 
 ## 2026-09-26 — Explicit imperative Rally commands
 

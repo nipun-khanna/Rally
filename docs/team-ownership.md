@@ -9,7 +9,7 @@ Updated from user's explicit teammate assignments on 2026-09-26. This ownership 
 | Private relationship dashboard | Human frontend teammate | Attention cards, relationship profiles, draft review, action states | Do not implement dashboard UI or its interaction states |
 | Local follow-up detection | Human backend teammate | Commitments, unfinished plans, source evidence, dismiss/snooze/done | Do not implement detector, follow-up tables or lifecycle APIs |
 | Calendar integration | Human backend teammate | OAuth setup, free/busy, slots, approved meetup events | Do not implement calendar adapters or setup flow |
-| Website deployment | Human frontend/infra teammate | GitHub → Vercel previews and production | Do not implement CI or deployment settings |
+| Vercel deployment | Root/operator (manual) | Use the existing Mac publisher for the group archive; deploy any future standalone site manually to a separate Vercel project | GitHub Actions is deferred; never deploy website code to `rallyplans` |
 | Existing iMessage/planning reliability | Root + assigned subagent | Trigger fixes, provider diagnostics, scheduler isolation, regression tests | Implement and verify existing runtime fixes |
 | Shared integration | Root | Agreed API/config contracts, shared main/config wiring after deliverables arrive, combined tests and demo | Prepare contract/checklist now; integrate actual modules later |
 
@@ -49,10 +49,12 @@ The existing `app/relationships/store.py` and `learning.py` are shared dependenc
 
 ### Deployment
 
-- State website root/build command, production branch, preview behavior and required repository/Vercel secrets.
-- Use synthetic website data for collaboration previews; a GitHub runner does not have the Mac's operational SQLite database.
+- There is no standalone website source directory yet, and no GitHub Actions deployment workflow is configured.
+- Use the Vercel CLI manually for a future standalone website, from its own directory and linked to a Vercel project separate from `rallyplans`.
+- The existing `rallyplans` project is the production group archive and is refreshed by the Mac publisher, which requires the local SQLite database and media.
+- Keep personal relationship data and credentials out of any website build inputs. Do not send archive data through GitHub Actions.
 - Keep personal dashboard data and credentials out of static group export/deployment.
-- Coordinate with existing local portal publisher so automatic deployments do not erase existing group snapshots unexpectedly.
+- See [Vercel deployment operations](vercel-deployment.md) for the manual procedures.
 
 ## Root integration acceptance tests
 

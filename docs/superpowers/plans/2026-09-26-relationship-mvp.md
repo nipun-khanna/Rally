@@ -140,7 +140,7 @@ Google primary references: https://developers.google.com/workspace/calendar/api/
 
 ## Separate open work
 
-Website collaborator GitHub → Vercel CI is a separate deployment task: preview site code with synthetic data without requiring a Mac runner. Private dashboard hosting and personal data synchronization are not authorized by approval of the public group archive. Dedicated sender topology is still unverified and is not a prerequisite for local dashboard/fixture event demo.
+Deployment decision (2026-09-26): GitHub Actions → Vercel is deferred; deploy manually as needed. The current `rallyplans` production project serves the approved group archive and is refreshed by the Mac publisher. Any future standalone website must use a separate Vercel project and synthetic data. Private dashboard hosting and personal data synchronization are not authorized by approval of the public group archive. Dedicated sender topology is still unverified and is not a prerequisite for local dashboard/fixture event demo. See [Vercel deployment operations](../../vercel-deployment.md).
 
 ## Current execution status
 

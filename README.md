@@ -36,6 +36,12 @@ Ask `Hey Rally, send our page link` in the group. Members can also ask `Hey Rall
 
 `POST /portal/admin/{chat_id}/settings?token=...` and `POST /portal/admin/{chat_id}/import?token=...` provide authenticated local administration. The live backend depends on a persistent SQLite database, local media files, and the Mac-hosted BlueBubbles service. `python -m scripts.export_portal` builds a static snapshot in ignored `data/portal_build` without uploading it. With the group's approval to host its archive on Vercel, set `RALLY_PORTAL_PUBLISH_APPROVED=1` and `RALLY_APP_URL=https://rallyplans.vercel.app`; the running backend publishes changed snapshots about every five minutes using `scripts.publish_portal`. The hosted page is a static snapshot, so the live local page reflects changes first. Vercel serves only the exported page, local search index, and allowed media files, never `.env` or the operational SQLite database. Active attachment formats are downloads with restrictive headers.
 
+### Vercel deployments
+
+The production project `rallyplans` serves the approved group archive. Its publisher runs on the Mac because it needs the local SQLite database and media files. GitHub Actions deployment is intentionally not configured. Do not run a generic repository or website deployment against `rallyplans`; it would replace the archive snapshot.
+
+To request an immediate archive refresh from the Mac, use the manual procedure in [Vercel deployment operations](docs/vercel-deployment.md). A future standalone website must use a separate Vercel project and be deployed manually from its website directory. There is no standalone website source directory in this repository yet.
+
 ## Test with code
 
 ```sh
