@@ -25,7 +25,7 @@ _INSTRUCTIONS = (
 )
 
 
-def mint_ephemeral_token(xai_api_key: str, *, expires_after_seconds: int = 300) -> str:
+def mint_ephemeral_token(xai_api_key: str, *, expires_after_seconds: int = 1800) -> str:
     if not xai_api_key:
         raise VoiceSessionError('xAI API key is not configured')
     try:
