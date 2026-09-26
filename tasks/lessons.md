@@ -73,3 +73,9 @@
 
 - User correction: Rally must respond whenever explicitly called, regardless of the words after its name.
 - Rule: direct-address detection recognizes the name at message start with optional greeting/@ and does not use a command-verb allowlist. Test arbitrary statements, contextual requests, emojis, and the name alone; ordinary mid-sentence mentions remain distinct.
+
+## 2026-09-26 — Honor external teammate ownership
+
+- User correction: dashboard, follow-up detection, calendar integration, and website deployment are already assigned to human teammates.
+- Rule: before dispatching implementation, record human/subagent ownership and file/API boundaries. Do not implement an assigned subsystem in parallel. Root owns existing runtime reliability, shared contract coordination, and integration after teammate deliverables; ask for branches/PRs without blocking independent reliability work.
+- Rule: an approved implementation plan is narrowed by later ownership instructions. Update the plan immediately and give agents the exclusions explicitly.

@@ -390,3 +390,46 @@ private history exported, deployment changed, or live configuration modified.
 - User re-enabled group history; restored history/media/analytics sections and restarted service.
 - Two authorized labeled tests sent in the allowlisted group. Page-link reply acknowledged sent at 1.83 seconds; Grok-backed help reply acknowledged sent at 9.78 seconds from send initiation. Input transport acknowledgements 0.83 and 0.74 seconds respectively.
 - Measurements poll SQLite at one-second intervals and confirm provider acknowledgements, not recipient screen/read time. Both original requests were observed via live BlueBubbles webhooks.
+
+## Updated relationship-manager PRD — parallel audit
+
+- [x] Capture updated product intent and demo acceptance flow in docs/relationship-mvp-audit.md.
+- [x] Dispatch independent memory/dashboard, follow-up, and calendar audits concurrently.
+- [x] Consolidate existing functionality and missing demo requirements.
+- [ ] Review the proposed subsystem design, then implementation plan, before coding new behavior.
+
+### Universal direct Rally addressing
+
+- [x] Replace command-word allowlist with start-of-message Rally/@Rally/optional greeting trigger; unrelated mid-message mentions remain ordinary chat.
+- [x] Allow natural replies outside planning in direct-answer prompt, retaining approval and non-invention rules.
+- [x] Regression red/green and full pytest: 159 passed.
+- [x] Restart local service and process Nipun's unanswered request once: direct reply recorded sent. Subsequent extraction failed (HTTP error after 36.03 seconds total), so broader plan-processing failure remains open.
+- [ ] Diagnose extraction failure. Automatic approval review rejected a standalone real-context xAI diagnostic replay even after history re-enable; no workaround attempted. Synthetic Grok requests succeeded earlier.
+
+### Extraction diagnostics and updated PRD implementation plan
+
+- [x] User explicitly authorized one real group-context xAI extraction diagnostic. Subagent consumed it once: provider ReadTimeout at the prior 25-second timeout, no further replay.
+- [x] Add sanitized provider stage/kind/HTTP-status diagnostics and configurable extraction HTTP timeout (default 60 seconds, range 1–120). Direct replies/decisions retain 25 seconds. Evidence/participant/date validations preserved.
+- [x] Regression tests demonstrated failure before fixes; root integrated env setting and safe webhook logging. Full suite: 166 passed, existing dependency warning.
+- [x] Restart the local service with the verified change. Live extraction success remains unverified; larger timeout can increase shared-lock wait.
+- [x] Replace PRD.md with the user's relationship-manager PRD, retaining previous planner PRD in docs/group-planning-prd.md.
+- [x] Write reviewable design and implementation plan for private dashboard, local follow-ups, calendar availability/setup, reviewed actions and connected demo.
+- [x] Written implementation plan approved. Later user instruction assigns dashboard, follow-ups, calendar and deployment to external teammates; internal agents restricted to existing-runtime reliability and integration review.
+
+
+### External teammate coordination
+
+- [x] Record dashboard/follow-up/calendar/deployment ownership in docs/team-ownership.md and narrow approved implementation plan accordingly.
+- [x] Tell running agents not to implement external teammate subsystems.
+- [ ] Obtain teammate branches/PRs and actual interface contracts.
+- [ ] Integrate shared routes/configuration and connected end-to-end demo after teammate deliverables arrive.
+- [x] Verify scheduler isolates one failing group plan from other plans and private-monitor exceptions from subsequent checks: regression tests, 169 passing tests, independent review clean.
+
+
+### Ownership-constrained execution review
+
+- External teammates have not started branches yet; assignments remain reserved. No dashboard/follow-up/calendar/deployment code added in this session.
+- Root completed current runtime config/logging and scheduler isolation; subagents implemented extraction diagnostics and group-plan isolation and independently reviewed the combined diff.
+- Final full suite: 169 passed, one existing dependency warning. `git diff --check` clean.
+- Existing shared lock still spans provider calls; a longer extraction HTTP timeout can increase queue latency. HTTPX timeouts are per network phase rather than total wall-clock deadlines.
+- One real extraction diagnostic timed out at prior 25-second setting. No second replay and no real messages sent during this reliability work; live extraction success is not claimed.
