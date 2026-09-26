@@ -51,6 +51,10 @@ State is derived from chat evidence and backend outcomes; the model may suggest 
 
 **Approval rule:** only an explicit affirmative reply from a human member of the originating chat can authorize the current concrete proposal. “Book it” is sufficient when exactly one current proposal is pending; vague enthusiasm is not. Record approval before `ACT`. A changed or expired proposal needs new approval. Calendar or any future real-world tool requires approval covering that action too.
 
+For the MVP, a proposal expires 24 hours after creation. Expiry leaves the historical plan and proposal in SQLite, cancels an unsent proposal message, and requires fresh human planning input before another automatic suggestion.
+
+**Direct address (subsequent user requirement):** each new human group message is checked for an explicit plain-text call such as `Hey Rally, what's the plan?` or `Rally, recap the options.` An addressed message gets one concise Grok answer based on the originating group's saved plan and recent messages. Incidental mentions do not trigger a reply. Answers use the same outbox and chat GUID as proactive messages, and they cannot execute tools or count as booking approval. While testing through a shared iMessage account, self-sent human messages are accepted and Rally's `Rally:` replies are ignored on inbound.
+
 ## User-facing flow
 
 1. BlueBubbles delivers messages from the dinner group. Rally records them once and ignores its own outgoing messages.
