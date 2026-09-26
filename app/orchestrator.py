@@ -15,6 +15,7 @@ from app.reservations import create_reservation
 from app.store import Store
 from app.web import should_search_web
 from app.tone import group_tone
+from app.adaptive.handler import should_use_adaptive
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def _log_scheduled_failure(phase: str, exc: Exception):
 class RallyService:
     def __init__(self, store: Store, agent, search_fn, send_fn, stall_minutes: int = 30,
                  extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None,
-                 portal_handler=None, web_answer_fn=None):
+                 portal_handler=None, web_answer_fn=None, adaptive_handler=None):
         self.store = store
         self.agent = agent
         self.extractor = extractor or agent
@@ -42,6 +43,7 @@ class RallyService:
         self.allowed_chat_ids = None if allowed_chat_ids is None else frozenset(allowed_chat_ids)
         self.portal_handler = portal_handler
         self.web_answer_fn = web_answer_fn
+        self.adaptive_handler = adaptive_handler
         self._lock = RLock()
 
     def _chat_allowed(self, chat_id: str) -> bool:
@@ -93,6 +95,16 @@ class RallyService:
                 "direct_reply", message.message_id):
             portal_answer = self.portal_handler(message) if self.portal_handler else None
             answer = portal_answer
+            if portal_answer is None and self.adaptive_handler and should_use_adaptive(message.text):
+                try:
+                    answer = self.adaptive_handler.answer(message)
+                except Exception as exc:
+                    _log_scheduled_failure("adaptive answer", exc)
+                    answer = "I couldn't finish that request. Please try again later."
+                self._queue_and_send(message.chat_id, f"Rally: {answer}",
+                                     "direct_reply", message.message_id)
+                self.store.mark_processed(message.message_id)
+                return True
             if portal_answer is None and self.web_answer_fn and should_search_web(message.text):
                 try:
                     answer = self.web_answer_fn(message.text, tone=group_tone(messages))

@@ -454,8 +454,14 @@ private history exported, deployment changed, or live configuration modified.
 ### Adaptive requests implementation (unassigned backend area)
 
 - [x] Ground design in docs/remaining-functionality-design.md and write docs/adaptive-requests-implementation-plan.md with boundaries to external teammate work.
-- [ ] Implement durable request/workflow store and tests.
-- [ ] Implement registry and exact approval boundary with tests.
-- [ ] Implement structured planning and inert generated-code proposals with tests.
-- [ ] Integrate explicit adaptive requests into same-chat routing without stealing existing portal/planner/web behavior.
+- [x] Implement durable request/workflow store and tests.
+- [x] Implement registry and exact approval boundary with tests.
+- [x] Implement structured planning and inert generated-code proposals with tests.
+- [x] Integrate explicit adaptive requests into same-chat routing without stealing existing portal/planner/web behavior.
 - [ ] Verify and document actual capability coverage, commits and live behavior.
+
+### Adaptive requests review
+
+- Explicit `Rally, build/automate/do/use tools…` requests enter the adaptive planner in allowlisted chats. Portal commands and direct web lookups keep their existing priority. Registered read tools are plan status and the existing budgeted web search. No commitment tool is currently registered, so approval-bound side effects remain a framework, not a live capability.
+- Missing capabilities are durable. An optional second model call drafts Python source as inert, private data for developer review; no generation result is installed or executed. The review endpoint requires the local webhook token and is outside the public portal.
+- Synthetic xAI planner call selected `get_plan_status` successfully. Synthetic xAI code-draft call produced a syntax-valid `pending_review` artifact. Neither test sent an iMessage or used private group context. Full suite: 215 tests passed before final review.

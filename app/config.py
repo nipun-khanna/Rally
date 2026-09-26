@@ -15,6 +15,12 @@ from app.orchestrator import RallyService
 from app.places import PlacesError, Venue, geocode_location, search_places
 from app.store import Store
 from app.web import GrokWebClient
+from app.adaptive.agent import AdaptivePlanner
+from app.adaptive.handler import AdaptiveHandler
+from app.adaptive.store import AdaptiveStore
+from app.adaptive.tools import build_default_registry
+from app.adaptive.generator import CapabilityDraft, CapabilityProposalGenerator
+from app.adaptive.proposals import CapabilityProposalStore
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,9 @@ class Settings:
     web_enabled: bool = False
     web_daily_limit: int = 0
     web_max_tool_calls: int = 3
+    adaptive_enabled: bool = True
+    adaptive_code_proposals: bool = True
+    admin_token: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -111,6 +120,9 @@ class Settings:
             web_enabled=web_enabled,
             web_daily_limit=web_daily_limit,
             web_max_tool_calls=web_max_tool_calls,
+            adaptive_enabled=source.get("RALLY_ADAPTIVE_ENABLED", "1") == "1",
+            adaptive_code_proposals=source.get("RALLY_ADAPTIVE_CODE_PROPOSALS", "1") == "1",
+            admin_token=source.get("RALLY_ADMIN_TOKEN", ""),
         )
 
 
@@ -182,7 +194,23 @@ def build_service(settings: Settings) -> RallyService:
                 return "Today's web search limit has been reached. Try again tomorrow."
             return web.answer(request, tone=tone)
 
+    adaptive_handler = None
+    if settings.adaptive_enabled and settings.xai_api_key and settings.allowed_chat_ids:
+        proposal_generator = None
+        if settings.adaptive_code_proposals:
+            def draft_transport(payload):
+                return agent._call(CapabilityDraft, payload['system'],
+                                   {'request':payload['request'],
+                                    'missing_capability':payload['missing_capability']})
+            proposal_generator = CapabilityProposalGenerator(
+                draft_transport, CapabilityProposalStore(settings.database_path.parent /
+                                                         'capability_proposals'))
+        adaptive_handler = AdaptiveHandler(
+            AdaptiveStore(settings.database_path), AdaptivePlanner(agent._call),
+            build_default_registry(settings.allowed_chat_ids, plan_store=store,
+                                   web_answer_fn=web_answer_fn), proposal_generator)
+
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
                         allowed_chat_ids=settings.allowed_chat_ids,
-                        web_answer_fn=web_answer_fn)
+                        web_answer_fn=web_answer_fn, adaptive_handler=adaptive_handler)

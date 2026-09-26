@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 from app.agent import GrokProviderError
@@ -51,12 +51,14 @@ def create_app(service=None, *, webhook_token: str | None = None,
                tick_seconds: int | None = None, portal_store: PortalStore | None = None,
                history_client: BlueBubblesHistoryClient | None = None,
                app_url: str | None = None, media_root: str | Path | None = None,
-               history_enabled: bool = True, relationship_service=None) -> FastAPI:
+               history_enabled: bool = True, relationship_service=None,
+               admin_token: str | None = None) -> FastAPI:
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
         service = build_service(settings)
         webhook_token = settings.webhook_token
+        admin_token = settings.admin_token
         demo_mode = settings.demo_mode
         tick_seconds = settings.tick_seconds
         app_url = app_url or settings.app_url
@@ -218,6 +220,30 @@ def create_app(service=None, *, webhook_token: str | None = None,
         reservation = service.store.reservation(proposal.id) if proposal else None
         return HTMLResponse(render_debug_view(plan, proposal, reservation,
                                              messages=service.store.recent_messages(chat_id)))
+
+    @app.get('/adaptive/admin/requests/{request_id}')
+    def adaptive_request(request_id: str, include_source: bool = False,
+                         x_rally_admin_token: str | None = Header(default=None)):
+        if not admin_token or not x_rally_admin_token or not hmac.compare_digest(
+                x_rally_admin_token, admin_token):
+            raise HTTPException(403, 'Admin token required')
+        handler = getattr(service, 'adaptive_handler', None)
+        if handler is None:
+            raise HTTPException(404, 'Adaptive requests unavailable')
+        try:
+            request = handler.store.get_request(request_id)
+        except ValueError:
+            raise HTTPException(404, 'Request not found') from None
+        if request['chat_id'] not in allowed_chats or request['chat_id'] in personal_chat_ids():
+            raise HTTPException(404, 'Request not found')
+        result = {'request': request}
+        proposal_id = request['capability_proposal_id']
+        generator = handler.proposal_generator
+        if proposal_id and generator:
+            result['proposal'] = generator.store.get(proposal_id)
+            if include_source:
+                result['source'] = generator.store.read_source(proposal_id)
+        return result
 
     @app.post("/portal/admin/{chat_id}/import")
     def import_history(chat_id: str, token: str | None = None):
