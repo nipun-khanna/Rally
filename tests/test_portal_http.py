@@ -56,7 +56,7 @@ class PortalHttpTests(unittest.TestCase):
     def test_link_and_group_settings_stay_in_original_chat(self):
         self.assertEqual(self.webhook("m1", "Hey Rally, send our page link").status_code, 200)
         public_id = self.portal.ensure_group(CHAT)
-        self.assertEqual(self.sent, [(CHAT, f"Rally: Our group page: https://rallyplans.vercel.app/{public_id}")])
+        self.assertEqual(self.sent, [(CHAT, f"Our group page: https://rallyplans.vercel.app/{public_id}")])
         page = self.client.get(f"/{public_id}")
         self.assertEqual(page.status_code, 200)
         self.assertIn("Conversation history", page.text)

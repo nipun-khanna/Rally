@@ -39,12 +39,16 @@ class RelationshipStore:
                 CREATE TABLE IF NOT EXISTS rel_config (
                     owner TEXT PRIMARY KEY, destination TEXT NOT NULL,
                     zone TEXT NOT NULL, hour INTEGER NOT NULL, revision INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS rel_profiles (
+                    owner TEXT PRIMARY KEY, zone TEXT NOT NULL, hour INTEGER NOT NULL,
+                    revision INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS rel_people (
                     id TEXT PRIMARY KEY, owner TEXT NOT NULL, label TEXT NOT NULL,
                     label_key TEXT NOT NULL, mode TEXT NOT NULL, days INTEGER NOT NULL,
                     created_at TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
                     snooze_until TEXT, generation INTEGER NOT NULL DEFAULT 1,
-                    category TEXT,
+                    category TEXT NOT NULL DEFAULT 'other', intention TEXT NOT NULL DEFAULT '',
+                    contact_address TEXT,
                     UNIQUE(owner,label_key));
                 CREATE TABLE IF NOT EXISTS rel_contacts (
                     owner TEXT NOT NULL, event_id TEXT NOT NULL, person_id TEXT NOT NULL,
@@ -70,10 +74,15 @@ class RelationshipStore:
                     eligible INTEGER NOT NULL, scan INTEGER NOT NULL,
                     PRIMARY KEY(owner,chat_id,message_id));
             ''')
-            try:
-                db.execute('ALTER TABLE rel_people ADD COLUMN category TEXT')
-            except sqlite3.OperationalError:
-                pass
+            # Existing relationship databases predate profile metadata.
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(rel_people)')}
+            for name, declaration in (
+                ('category', "TEXT NOT NULL DEFAULT 'other'"),
+                ('intention', "TEXT NOT NULL DEFAULT ''"),
+                ('contact_address', 'TEXT'),
+            ):
+                if name not in columns:
+                    db.execute(f'ALTER TABLE rel_people ADD COLUMN {name} {declaration}')
             # A prior process may have died after the transport accepted a send.
             if recover:
                 db.execute("UPDATE rel_outbox SET status='uncertain' WHERE status='sending'")
@@ -126,6 +135,53 @@ class RelationshipStore:
                 raise ValueError('Personal reminders are not configured')
             return dict(row)
 
+    def ensure_profile(self, owner: str, zone: str, hour: int = 18) -> dict:
+        if not owner.strip() or not 0 <= hour <= 23:
+            raise ValueError('Owner and valid local hour are required')
+        try:
+            ZoneInfo(zone)
+        except ZoneInfoNotFoundError:
+            raise ValueError('Unknown time zone') from None
+        with self.db() as db:
+            config = db.execute('SELECT * FROM rel_config WHERE owner=?', (owner,)).fetchone()
+            if config:
+                return dict(config)
+            old = db.execute('SELECT * FROM rel_profiles WHERE owner=?', (owner,)).fetchone()
+            if old:
+                return dict(old)
+            db.execute('INSERT INTO rel_profiles VALUES(?,?,?,?)', (owner, zone, hour, 1))
+            return {'owner': owner, 'zone': zone, 'hour': hour, 'revision': 1}
+
+    def profile(self, owner: str) -> dict:
+        """Return the owner's local profile, preferring configured reminder settings."""
+        with self.db() as db:
+            row = db.execute('SELECT * FROM rel_config WHERE owner=?', (owner,)).fetchone()
+            if row:
+                return dict(row)
+            row = db.execute('SELECT * FROM rel_profiles WHERE owner=?', (owner,)).fetchone()
+            if row:
+                return dict(row)
+            raise ValueError('Relationship profile is not configured')
+
+    def set_metadata(self, owner: str, label: str, *, category: str, intention: str,
+                     contact_address: str | None = None) -> dict:
+        categories = {'close_friend', 'family', 'parent', 'sibling', 'cousin',
+                      'grandparent', 'friend', 'other'}
+        category = category.strip().casefold()
+        intention = intention.strip()
+        if category not in categories or len(intention) > 500:
+            raise ValueError('Choose a supported relationship category and an intention up to 500 characters')
+        if contact_address is not None:
+            contact_address = contact_address.strip() or None
+            if contact_address and len(contact_address) > 320:
+                raise ValueError('Contact address must be at most 320 characters')
+        with self.db() as db:
+            person = self._person(db, owner, label)
+            db.execute('UPDATE rel_people SET category=?,intention=?,contact_address=?,generation=generation+1 WHERE id=? AND owner=?',
+                       (category, intention, contact_address, person['id'], owner))
+            return dict(db.execute('SELECT * FROM rel_people WHERE id=? AND owner=?',
+                                   (person['id'], owner)).fetchone())
+
     def _person(self, db, owner, label):
         row = db.execute('SELECT * FROM rel_people WHERE owner=? AND label_key=?',
                          (owner, label.strip().casefold())).fetchone()
@@ -142,7 +198,7 @@ class RelationshipStore:
 
     def upsert(self, owner: str, label: str, mode: str, days: int, now: datetime,
                category: str | None = None):
-        self.config(owner)
+        self.profile(owner)
         label = label.strip()
         if not label or len(label) > 80 or mode not in ('call', 'visit', 'message', 'other') or not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= 90:
             raise ValueError('Use a name, a supported contact mode, and a cadence of 1–90 days')
@@ -151,7 +207,8 @@ class RelationshipStore:
         with self.db() as db:
             existing = db.execute('SELECT category FROM rel_people WHERE owner=? AND label_key=?',
                                   (owner, label.casefold())).fetchone()
-            resolved_category = category if category is not None else (existing['category'] if existing else None)
+            resolved_category = (category if category is not None else
+                                 (existing['category'] or 'other' if existing else 'other'))
             db.execute('''INSERT INTO rel_people(id,owner,label,label_key,mode,days,created_at,category)
                 VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(owner,label_key) DO UPDATE SET
                 mode=excluded.mode,days=excluded.days,category=excluded.category,
@@ -256,8 +313,8 @@ class RelationshipStore:
                 if not eligible(now, due, person['zone'], person['hour']):
                     continue
                 verb = {'call': 'called', 'visit': 'visited', 'message': 'messaged', 'other': 'connected with'}[person['mode']]
-                text = (f"Rally: Time to {person['mode']} {person['label']}. Last recorded contact: {anchor[:10]}."
-                        if anchor else f"Rally: Have you {verb} {person['label']} recently? Your {person['days']}-day reminder is due; I don't have confirmed contact yet.")
+                text = (f"Time to {person['mode']} {person['label']}. Last recorded contact: {anchor[:10]}."
+                        if anchor else f"Have you {verb} {person['label']} recently? Your {person['days']}-day reminder is due; I don't have confirmed contact yet.")
                 key = f"due:{person['id']}:{person['generation']}:{anchor or person['created_at']}"
                 cursor = db.execute('INSERT OR IGNORE INTO rel_outbox VALUES(?,?,?,?,?,?,?,?,?,?)',
                     (str(uuid4()), person['owner'], person['destination'], person['revision'], person['id'], person['generation'], key, text, 'pending', stamp(now)))
@@ -310,8 +367,8 @@ class RelationshipStore:
     def add_source(self, owner: str, chat_id: str, label: str):
         if not chat_id.startswith(('iMessage;-;', 'iMessage;+;')) or not chat_id.split(';')[-1]:
             raise ValueError('Select an exact iMessage conversation GUID')
-        config = self.config(owner)
-        if chat_id == config['destination']:
+        profile = self.profile(owner)
+        if chat_id == profile.get('destination'):
             raise ValueError('The reminder conversation cannot be a learning source')
         with self.db() as db:
             person = self._person(db, owner, label)

@@ -86,7 +86,7 @@ def test_group_planning_unchanged_and_archive_disabled(tmp_path):
     client, private, group, portal, sent = setup(tmp_path)
     response = client.post('/webhooks/bluebubbles?token=secret', json=payload(GROUP, 'Hey Rally, whats the plan'))
     assert response.json()['accepted']
-    assert sent == [(GROUP, 'Rally: group reply')]
+    assert sent == [(GROUP, 'group reply')]
     assert portal.list_messages(GROUP) == []
     assert client.post(f'/portal/admin/{GROUP}/import?token=secret').status_code == 404
 

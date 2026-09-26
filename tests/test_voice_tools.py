@@ -88,7 +88,7 @@ class ListAttentionTests(VoiceTestBase):
                                              blockers=["no venue chosen"]), NOW)
         result = self.registry.call("list_attention", {})
         self.assertEqual(result["overdue_relationships"],
-                         [{"label": "Mom", "mode": "call", "category": None, "target_days": 3,
+                         [{"label": "Mom", "mode": "call", "category": "other", "target_days": 3,
                            "days_since_contact": None}])
         self.assertEqual(len(result["stalled_plans"]), 1)
         self.assertEqual(result["stalled_plans"][0]["chat_id"], CHAT)

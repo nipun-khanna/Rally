@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date, datetime, time as clock_time, timedelta, timezone
-from threading import RLock
+from threading import Lock, RLock
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,6 +10,7 @@ from app.agent import GrokProviderError
 from app.availability import AvailabilityWindow, choose_slot, looks_like_availability, parse_availability
 from app.bluebubbles import DeliveryUncertainError
 from app.models import ChatMessage, Plan, PlanFacts, Proposal
+from app.message_text import remove_rally_signature
 from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
                         valid_approval, valid_calendar_approval)
 from app.places import PlacesError
@@ -60,7 +61,16 @@ class RallyService:
         self.portal_handler = portal_handler
         self.web_answer_fn = web_answer_fn
         self.adaptive_handler = adaptive_handler
-        self._lock = RLock()
+        self._chat_locks_guard = Lock()
+        self._chat_locks = {}
+
+    def _chat_lock(self, chat_id: str) -> RLock:
+        with self._chat_locks_guard:
+            lock = self._chat_locks.get(chat_id)
+            if lock is None:
+                lock = RLock()
+                self._chat_locks[chat_id] = lock
+            return lock
 
     def _chat_allowed(self, chat_id: str) -> bool:
         excluded = getattr(self, 'excluded_chat_ids', frozenset())
@@ -69,12 +79,14 @@ class RallyService:
                 (self.allowed_chat_ids is None or chat_id in self.allowed_chat_ids))
 
     def receive(self, message: ChatMessage) -> bool:
-        with self._lock:
+        if not self._chat_allowed(message.chat_id):
+            return False
+        with self._chat_lock(message.chat_id):
             return self._receive(message)
 
     def recover_pending(self, chat_id: str, *, limit: int = 75) -> int:
         """Re-extract a bounded pending window without replaying replies or actions."""
-        with self._lock:
+        with self._chat_lock(chat_id):
             if not self._chat_allowed(chat_id):
                 raise ValueError("Chat is not allowed")
             messages, pending_ids = self.store.recovery_snapshot(chat_id, limit)
@@ -211,44 +223,47 @@ class RallyService:
                 _log_scheduled_failure("processing diagnostic", diagnostic_error)
 
     def tick(self, now: datetime | None = None) -> int:
-        with self._lock:
-            return self._tick(now)
+        now = now or datetime.now(timezone.utc)
+        count = 0
+        for snapshot in self.store.active_plans():
+            if not self._chat_allowed(snapshot.chat_id):
+                continue
+            with self._chat_lock(snapshot.chat_id):
+                plan = self.store.get_plan(snapshot.chat_id)
+                if not plan:
+                    continue
+                try:
+                    if plan.state == "READY" and plan.pending_proposal_id:
+                        proposal = self.store.get_proposal(plan.pending_proposal_id)
+                        if (proposal and proposal.created_at and not self.store.has_approval(proposal.id)
+                                and now - datetime.fromisoformat(proposal.created_at) > timedelta(hours=24)):
+                            self.store.expire_proposal(proposal.id)
+                            continue
+                    if plan.pending_proposal_id and self.store.has_approval(plan.pending_proposal_id):
+                        proposal = self.store.get_proposal(plan.pending_proposal_id)
+                        if proposal and proposal.status == "pending" and proposal.version == plan.version:
+                            self._book(plan, proposal)
+                except Exception as exc:
+                    _log_scheduled_failure("approval recovery", exc)
+                plan = self.store.get_plan(snapshot.chat_id)
+                if plan and eligible_for_intervention(plan, now, self.stall_minutes):
+                    try:
+                        self._intervene(plan, now)
+                    except Exception as exc:
+                        _log_scheduled_failure("intervention", exc)
+                        continue
+                    count += 1
+        self.deliver_pending()
+        return count
 
     def _tick(self, now: datetime | None = None) -> int:
-        now = now or datetime.now(timezone.utc)
-        for plan in self.store.active_plans():
-            if not self._chat_allowed(plan.chat_id):
-                continue
-            try:
-                if plan.state == "READY" and plan.pending_proposal_id:
-                    proposal = self.store.get_proposal(plan.pending_proposal_id)
-                    if (proposal and proposal.created_at and not self.store.has_approval(proposal.id)
-                            and now - datetime.fromisoformat(proposal.created_at) > timedelta(hours=24)):
-                        self.store.expire_proposal(proposal.id)
-                        continue
-                if plan.pending_proposal_id and self.store.has_approval(plan.pending_proposal_id):
-                    proposal = self.store.get_proposal(plan.pending_proposal_id)
-                    if proposal and proposal.status == "pending" and proposal.version == plan.version:
-                        self._book(plan, proposal)
-            except Exception as exc:
-                _log_scheduled_failure("approval recovery", exc)
-        self.deliver_pending()
-        count = 0
-        for plan in self.store.active_plans():
-            if not self._chat_allowed(plan.chat_id):
-                continue
-            if eligible_for_intervention(plan, now, self.stall_minutes):
-                try:
-                    self._intervene(plan, now)
-                except Exception as exc:
-                    _log_scheduled_failure("intervention", exc)
-                    continue
-                count += 1
-        return count
+        return self.tick(now)
 
     def evaluate(self, chat_id: str, now: datetime | None = None) -> bool:
         """Demo trigger that uses the same eligibility and action path as tick."""
-        with self._lock:
+        if not self._chat_allowed(chat_id):
+            return False
+        with self._chat_lock(chat_id):
             return self._evaluate(chat_id, now)
 
     def _evaluate(self, chat_id: str, now: datetime | None = None) -> bool:
@@ -538,30 +553,31 @@ class RallyService:
         if not self.store.has_message("final", proposal.id):
             self._queue_and_send(plan.chat_id, text, "final", proposal.id)
         else:
-            self.deliver_pending()
+            self.deliver_pending(plan.chat_id)
 
     def _queue_and_send(self, chat_id: str, text: str, kind: str, ref_id: str):
-        self.store.queue_message(chat_id, text, kind, ref_id)
-        self.deliver_pending()
+        self.store.queue_message(chat_id, remove_rally_signature(text), kind, ref_id)
+        self.deliver_pending(chat_id)
 
-    def deliver_pending(self):
-        with self._lock:
-            self._deliver_pending()
+    def deliver_pending(self, chat_id: str | None = None):
+        self._deliver_pending(chat_id)
 
-    def _deliver_pending(self):
+    def _deliver_pending(self, chat_id: str | None = None):
         for item in self.store.pending_messages():
-            if not self._chat_allowed(item["chat_id"]):
+            current_chat_id = item["chat_id"]
+            if (chat_id is not None and current_chat_id != chat_id) or not self._chat_allowed(current_chat_id):
                 continue
-            try:
-                self.send_fn(item["chat_id"], item["text"])
-            except DeliveryUncertainError:
-                self.store.set_delivery(item["id"], "uncertain", "Inspect the iMessage thread before retrying")
-                continue
-            except Exception:
-                self.store.set_delivery(item["id"], "failed", "Message delivery failed")
-                continue
-            self.store.set_delivery(item["id"], "sent")
-            if item["kind"] == "final" and item["ref_id"]:
-                proposal = self.store.get_proposal(item["ref_id"])
-                if proposal:
-                    self.store.set_state(proposal.plan_id, "DONE")
+            with self._chat_lock(current_chat_id):
+                try:
+                    self.send_fn(current_chat_id, remove_rally_signature(item["text"]))
+                except DeliveryUncertainError:
+                    self.store.set_delivery(item["id"], "uncertain", "Inspect the iMessage thread before retrying")
+                    continue
+                except Exception:
+                    self.store.set_delivery(item["id"], "failed", "Message delivery failed")
+                    continue
+                self.store.set_delivery(item["id"], "sent")
+                if item["kind"] == "final" and item["ref_id"]:
+                    proposal = self.store.get_proposal(item["ref_id"])
+                    if proposal:
+                        self.store.set_state(proposal.plan_id, "DONE")

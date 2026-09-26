@@ -1,8 +1,39 @@
 # Rally MVP implementation tasks
 
-## Current teammate handoff — 2026-09-26
+## Rally browser capability
 
-The full PRD is **not complete**. No open teammate PRs were present at the last GitHub check. Pick one area below and open a focused branch/PR; include the route and data contract in the PR description. See [team ownership](../docs/team-ownership.md) and [relationship MVP plan](../docs/superpowers/plans/2026-09-26-relationship-mvp.md) for detail. Keep personal relationship data out of the public group portal and Vercel snapshots.
+- [x] Write and self-review the browser capability spec: [Rally browser capability](../docs/superpowers/specs/2026-09-26-rally-browser-capability.md).
+- [ ] Review the spec and settle the open implementation decisions before writing an implementation plan or code.
+- [ ] Implement only after the spec and implementation plan are reviewed.
+
+## UI polish — active
+
+Visual brief: a clear relationship-management experience first, with iMessage blue and quiet neutral surfaces, Apple system typography, legible evidence and planning status, responsive layouts, keyboard focus, and reduced-motion support. Keep existing routes and behavior. The archive should retain recognizable iMessage conversation bubbles.
+
+- [x] Refresh private relationship dashboard view.
+- [x] Refresh iMessage group archive view without changing portal behavior.
+- [x] Refresh planning/debug view without changing data or actions.
+- [ ] Inspect desktop and mobile renderings visually with synthetic data; browser connection unavailable in this session.
+- [x] Run focused and full test suites; record review results.
+
+### UI review
+
+Implementation is complete; focused renderer tests and the full suite pass (268 passed, 38 subtests; one existing Starlette deprecation warning). Independent review findings for dark-theme links and narrow planner headings were fixed and re-reviewed. Rally's live local health endpoint returned HTTP 200; isolated synthetic preview routes at `127.0.0.1:8766` returned HTTP 200, and the offline planning smoke reached `DONE` with one demo reservation. No live chat message was sent. Screenshot review remains unavailable because no browser is connected to this session.
+
+## Current build plan — 2026-09-26
+
+The full PRD is **not complete**. User asked root to build the remaining relationship MVP, which supersedes earlier teammate ownership. The product center is personal relationship intelligence: private relationship intentions and memory, evidence-based attention, and useful follow-through. The group planner and public group archive remain supporting features. See [team ownership](../docs/team-ownership.md) and [relationship MVP plan](../docs/superpowers/plans/2026-09-26-relationship-mvp.md). Keep personal relationship data out of the public group portal and Vercel snapshots.
+
+### Active implementation sequence
+
+- [ ] Add relationship categories and intentions to existing local profiles; build an authenticated, private attention dashboard around contact rhythm and source evidence.
+- [ ] Detect unfinished promises and stalled personal/group plans from explicitly selected local sources, with durable complete, dismiss, and snooze decisions.
+- [ ] Add calendar free/busy coverage and available slots; unknown calendars must remain unknown. Tie draft sending and event creation to explicit, current-version approval.
+- [ ] Connect the personal relationship loop to supporting group planning and verify the complete flow with synthetic fixtures before any live data.
+- [ ] Apply Sunday-inspired per-chat batching/serialization to Rally's existing BlueBubbles transport, preserving durable message dedupe and the current BlueBubbles identity.
+- [ ] Run focused and full tests, a local private dashboard demo, privacy checks, and independent review; update actual status and push the feature branch for PR review.
+
+Implementation ruling: keep BlueBubbles because the Rally PRD names it as the primary message interface. Adopt pipeline principles from Sunday independently. Sunday has no root license, so its source is not copied; Photon is not added as a new transport.
 
 ### Deployment decision — 2026-09-26
 
@@ -16,14 +47,14 @@ No Actions workflow or extra Vercel project was created for this deferred pipeli
 
 | Priority | Owner | Task | Done when |
 | --- | --- | --- | --- |
-| 1 | Frontend teammate | **Private relationship dashboard:** attention cards, editable person profiles/categories/intentions, evidence and freshness, draft review, action states. Use local private routes; provide synthetic fixtures for preview. | Overdue person → suggested action → reviewed draft can be demonstrated with clear private authentication and unknown-data states. |
-| 1 | Backend teammate | **Local follow-up detection:** extract commitments and unfinished plans from explicitly selected conversations, retain source evidence, and implement dismiss/snooze/done plus edit/delete/disable lifecycle. | Fixture conversation creates a candidate; changing or disabling its source invalidates it without leaking source text to cloud/group portal. |
-| 1 | Backend teammate | **Calendar integration:** Google OAuth setup/verification, read-only free/busy, timezone-aware available slots, and version-bound approved event creation. Distinguish owner-only availability from mutual availability. | Connected or labeled fixture calendar produces a slot; edited details invalidate approval; duplicate approval creates at most one event. |
+| 1 | Root | **Private relationship intelligence:** attention cards, editable relationship profiles/categories/intentions, evidence and freshness, draft review, action states. Use local private routes; provide synthetic fixtures. | Overdue person → evidence-backed suggestion → reviewed draft can be demonstrated with clear private authentication and unknown-data states. |
+| 1 | Root | **Local follow-up detection:** extract commitments and unfinished plans from explicitly selected conversations, retain source evidence, and implement dismiss/snooze/done plus edit/delete/disable lifecycle. | Fixture conversation creates a candidate; changing or disabling its source invalidates it without leaking source text to cloud/group portal. |
+| 1 | Root | **Calendar availability:** OAuth setup/verification, read-only free/busy, timezone-aware available slots, and version-bound approved event creation. Distinguish owner-only from mutual availability. | Connected or labeled fixture calendar produces a slot; edited details invalidate approval; duplicate approval creates at most one event. |
 | 2 | Root/operator | **Manual Vercel operations:** keep the local publisher for `rallyplans`; deploy future standalone website code manually with the Vercel CLI to a separate project. | The archive refresh works from the Mac, and any future website deployment cannot overwrite `rallyplans` or publish private data. See [deployment runbook](../docs/vercel-deployment.md). |
-| 2 | Root | **Shared integration:** review teammate contracts/PRs, connect dashboard → follow-up → planning → availability → reviewed draft → approved event, then run the PRD demo. | One connected test and browser demo pass, with live-provider gaps labeled honestly. |
+| 2 | Root | **Connected personal relationship flow:** connect relationship memory → follow-up → supporting group planning → availability → reviewed draft → approved event, then run the PRD demo. | One connected test and browser demo pass, with live-provider gaps labeled honestly. |
 | 2 | Root | **iMessage/planning reliability:** resolve extraction timeouts and the 56 unprocessed group-message backlog without re-sending historical replies; verify live group response and approval safety. | New group messages are processed reliably; backlog recovery does not duplicate sends or silently skip plan changes. |
 
-Teammates should avoid editing `app/main.py`, `app/config.py`, and shared orchestration routes without coordinating interface changes. The dashboard, follow-up, calendar, and deployment areas remain assigned to humans. Root has already built the live BlueBubbles path, group planning foundation, web search, adaptive request registry, and inert code proposals; those are not new teammate tasks.
+Root coordinates shared changes to `app/main.py`, `app/config.py`, and orchestration routes. Existing BlueBubbles, group planning, web research, adaptive requests, and inert code proposals are foundations to build on, not duplicate.
 
 Root reliability note: xAI Grok 4.7 defaults to high reasoning. Extraction now requests configurable low reasoning effort to reduce latency; one synthetic structured call completed in 5.01 seconds. This does not prove the live 56-message backlog can be extracted successfully. Backlog recovery remains open and must not automatically resend old direct replies.
 
@@ -454,12 +485,11 @@ private history exported, deployment changed, or live configuration modified.
 - [x] Written implementation plan approved. Later user instruction assigns dashboard, follow-ups, calendar and deployment to external teammates; internal agents restricted to existing-runtime reliability and integration review.
 
 
-### External teammate coordination
+### External teammate coordination (superseded)
 
 - [x] Record dashboard/follow-up/calendar/deployment ownership in docs/team-ownership.md and narrow approved implementation plan accordingly.
 - [x] Tell running agents not to implement external teammate subsystems.
-- [ ] Obtain teammate branches/PRs and actual interface contracts.
-- [ ] Integrate shared routes/configuration and connected end-to-end demo after teammate deliverables arrive.
+- [x] Superseded by the user's request for root to implement the remaining relationship MVP in-session.
 - [x] Verify scheduler isolates one failing group plan from other plans and private-monitor exceptions from subsequent checks: regression tests, 169 passing tests, independent review clean.
 
 

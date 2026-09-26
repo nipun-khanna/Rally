@@ -6,6 +6,7 @@ from threading import RLock
 from uuid import uuid4
 
 from app.policy import explicitly_addresses_rally
+from app.message_text import remove_rally_signature
 from app.relationships.commands import reply
 from app.relationships.store import stamp
 
@@ -30,7 +31,7 @@ class RelationshipService:
             db.execute('INSERT INTO rel_requests VALUES(?,?,?)', (message.sender_id, message.message_id, result))
             db.execute('INSERT INTO rel_outbox VALUES(?,?,?,?,?,?,?,?,?,?)',
                        (str(uuid4()), message.sender_id, config['destination'], config['revision'], None, None,
-                        'reply:' + message.message_id, 'Rally: ' + result, 'pending', stamp(message.sent_at)))
+                        'reply:' + message.message_id, remove_rally_signature(result), 'pending', stamp(message.sent_at)))
         self.deliver(message.sent_at)
         return True
 
@@ -41,7 +42,7 @@ class RelationshipService:
                     self.store.finish_delivery(item['id'], 'canceled', now)
                     continue
                 try:
-                    self.send_fn(item['destination'], item['text'])
+                    self.send_fn(item['destination'], remove_rally_signature(item['text']))
                 except Exception:
                     # Never persist raw exceptions: URLs can contain credentials.
                     self.store.finish_delivery(item['id'], 'uncertain', now)

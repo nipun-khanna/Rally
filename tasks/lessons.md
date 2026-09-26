@@ -5,6 +5,11 @@
 - User correction: the twenty-per-day web search limit blocked expected Rally use.
 - Rule: distinguish a local cost guard from a provider limit. Default to usable access when the user asks for broad search, make a daily cap opt-in, and explain the remaining provider charges and per-request tool bound.
 
+## 2026-09-26 — Distinguish Rally's browser from the assistant's browser
+
+- User correction: “give it a browser” meant Rally itself should gain a browser tool, not that this coding session should connect to a browser.
+- Rule: resolve “it” against the product under development when the context is an agent capability request. Distinguish product runtime capabilities from tools available to the coding assistant before taking action.
+
 ## 2026-09-26 — Separate local monitoring from Rally's identity
 
 - User correction: treating the monitored user's current iMessage profile as Rally's account does not describe a deployable personal reminder service.
@@ -71,6 +76,13 @@
 - User correction: defer the GitHub Actions pipeline and deploy manually as needed.
 - Rule: stop CI implementation when the user changes deployment mode. Document the manual CLI path, identify the existing Vercel project's purpose, and avoid creating an extra project or workflow without a renewed request.
 
+## 2026-09-26 — Lead the README with the product
+
+- User correction: the main README should explain what the app does, not open with a narrow implementation pitch.
+- Rule: introduce the product and its main use cases first; distinguish working functionality from planned work before setup instructions, and keep those claims aligned with the PRD and current task tracker.
+- User correction: Rally's primary goal is personal relationship intelligence; group planning is supporting functionality.
+- Rule: prioritize relationship intentions, private memory, evidence-based attention, and user-approved follow-through in product language and implementation. Treat group-chat planning as one supporting source/action, not Rally's product center.
+
 ## 2026-09-26 — Explicit imperative Rally commands
 
 - User reported no response to an explicit Rally request. The trigger excluded imperative verbs such as turn, enable, and hide.
@@ -86,3 +98,8 @@
 - User correction: dashboard, follow-up detection, calendar integration, and website deployment are already assigned to human teammates.
 - Rule: before dispatching implementation, record human/subagent ownership and file/API boundaries. Do not implement an assigned subsystem in parallel. Root owns existing runtime reliability, shared contract coordination, and integration after teammate deliverables; ask for branches/PRs without blocking independent reliability work.
 - Rule: an approved implementation plan is narrowed by later ownership instructions. Update the plan immediately and give agents the exclusions explicitly.
+
+## 2026-09-26 — Do not sign outbound texts as Rally
+
+- User correction: stop signing sent messages as Rally.
+- Rule: deliver replies and reminders as natural message text without a `Rally:` prefix. Keep bot identity in transport metadata/internal state, and normalize already queued outbound messages before sending.

@@ -1,6 +1,20 @@
 # Rally
 
-Rally helps an iMessage group finish a plan: it understands the chat, notices a stalled decision, suggests a venue, waits for approval, and posts a clearly labeled **demo reservation**. Product requirements are in [PRD.md](PRD.md), implementation behavior in [SPEC.md](SPEC.md), and build tasks in [tasks/todo.md](tasks/todo.md).
+Rally is an iMessage relationship assistant. It helps people keep up with the relationships they care about by turning conversations into practical follow-through: remembering plans, surfacing reminders, and helping a group settle what to do next.
+
+## What Rally does
+
+- **Helps group chats make plans.** Call Rally by name to get a reply in the same iMessage thread. Rally keeps track of the current plan, can look up public information when enabled, and waits for clear approval before taking an action. Reservations in the current planning flow are labeled demos; Rally does not claim that a real booking was made.
+- **Keeps a group archive.** A group can request a link to its iMessage-themed page with available message history, attachments, members, tracked plans, and analytics. The archive is a static snapshot hosted at [rallyplans.vercel.app](https://rallyplans.vercel.app); anyone with the page link can open it.
+- **Supports personal relationship reminders.** Rally can keep local relationship records, contact rhythms, and confirmed calls, visits, or messages, then send due reminders to a configured direct iMessage conversation. Learning from a conversation is a separate opt-in. With the current shared iMessage account, the other person in that direct conversation can see reminders too.
+
+## What works now and what is still being built
+
+The repository contains the BlueBubbles message integration, direct-address replies, group planning and approval flow, the group archive, and a local relationship-reminder backend. Public web research and selected-conversation learning are optional and depend on configuration. The group archive is separate from Rally's active planning state.
+
+The full relationship-manager experience is not complete yet. The private attention dashboard, automatic follow-up detection from selected conversations, and a connected relationship → availability → reviewed message → approved calendar event demo still need implementation and integration. Google Calendar and live venue lookup also need provider setup and end-to-end verification. See [the PRD](PRD.md) and [the task tracker](tasks/todo.md) for scope and status.
+
+Product requirements are in [PRD.md](PRD.md), implementation behavior in [SPEC.md](SPEC.md), and build tasks in [tasks/todo.md](tasks/todo.md).
 
 ## Run locally
 
@@ -22,7 +36,7 @@ set +a
 
 Health: `GET /health`. Incoming BlueBubbles events: `POST /webhooks/bluebubbles?token=<RALLY_WEBHOOK_TOKEN>`. The backend checks the shared token and ignores Rally's own replies, direct-chat, and duplicate messages. Scheduler checks run automatically. The debug view and optional demo trigger require the same token.
 
-In an allowlisted group, a member can ask `Hey Rally, what's the plan?` or `Rally, recap the options.` Rally replies promptly in that thread using the group's recent messages and saved plan. Incidental mentions do not prompt replies. A request to book is answered as a question; only the separate, explicit approval phrase documented below can authorize a reservation. When Rally shares your current iMessage account, your own messages can also address it; Rally-generated replies begin with `Rally:` and are ignored on inbound.
+In an allowlisted group, a member can address Rally directly—for example, `Hey Rally, what's the plan?` or `Rally, recap the options.` Rally replies in that thread using the group's recent messages and saved plan. Incidental mentions do not prompt replies. A request to book is answered as a question; only the separate, explicit approval phrase documented below can authorize a reservation. Rally uses the configured BlueBubbles account; when that is your current iMessage account, your own messages can also address it. Rally-generated replies begin with `Rally:` and are ignored on inbound.
 
 Set `RALLY_ALLOWED_CHAT_GUIDS` to the exact BlueBubbles group-chat GUIDs that Rally may serve, separated by commas. It defaults to an empty set: the live backend will not ingest, schedule, or send for any group until one is configured. See [docs/demo.md](docs/demo.md) for the iMessage identity and group setup.
 

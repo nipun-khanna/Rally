@@ -1,25 +1,25 @@
 # Team ownership and integration handoff
 
-Updated from user's explicit teammate assignments on 2026-09-26. This ownership map supersedes the earlier internal-agent ownership in the relationship MVP implementation plan.
+Updated 2026-09-26 after the user asked root to build the remaining relationship MVP. This supersedes the earlier human teammate ownership for dashboard, follow-up detection, and calendar availability.
 
 ## Work assignments
 
 | Area | Owner | Deliverable | This session |
 | --- | --- | --- | --- |
-| Private relationship dashboard | Human frontend teammate | Attention cards, relationship profiles, draft review, action states | Do not implement dashboard UI or its interaction states |
-| Local follow-up detection | Human backend teammate | Commitments, unfinished plans, source evidence, dismiss/snooze/done | Do not implement detector, follow-up tables or lifecycle APIs |
-| Calendar integration | Human backend teammate | OAuth setup, free/busy, slots, approved meetup events | Do not implement calendar adapters or setup flow |
+| Private relationship intelligence | Root (implementation requested) | Relationship intentions, private attention dashboard, evidence, reviewed actions | Keep every personal record owner-scoped and out of group storage/export |
+| Local follow-up detection | Root (implementation requested) | Commitments, unfinished plans, source evidence, dismiss/snooze/done | Process only explicitly selected sources locally |
+| Calendar availability | Root (implementation requested) | OAuth setup, free/busy coverage, slots, approved meetup events | Unknown calendar coverage is never reported as free |
 | Vercel deployment | Root/operator (manual) | Use the existing Mac publisher for the group archive; deploy any future standalone site manually to a separate Vercel project | GitHub Actions is deferred; never deploy website code to `rallyplans` |
 | Existing iMessage/planning reliability | Root + assigned subagent | Trigger fixes, provider diagnostics, scheduler isolation, regression tests | Implement and verify existing runtime fixes |
-| Shared integration | Root | Agreed API/config contracts, shared main/config wiring after deliverables arrive, combined tests and demo | Prepare contract/checklist now; integrate actual modules later |
+| Shared integration | Root | Wire relationship memory, dashboard, follow-ups, calendar availability, planning, and reviewed actions into one private demo | Integrate only after each module has its contract and focused tests |
 
-User confirmed external teammates have not started branches yet; those assignments remain reserved. No external teammates have been messaged by tools. Existing subagent audits were read-only; the extraction subagent changed only existing provider code/tests. Scheduler subagent is restricted to existing `app/orchestrator.py` and `tests/test_service.py`.
+The user's latest instruction assigns the remaining relationship MVP implementation to root. Keep the previously approved ownership boundaries for existing runtime reliability and deployment behavior; do not replace the BlueBubbles transport or modify live data during fixture testing.
 
 ## Shared file ownership
 
-Root coordinates changes to `app/main.py`, `app/config.py`, `.env.example`, the connected end-to-end demo, and cross-subsystem integration tests. Teammates can propose shared changes in their PRs; root reviews and merges agreed wiring rather than implementing duplicate APIs first.
+Root coordinates changes to `app/main.py`, `app/config.py`, `.env.example`, the connected end-to-end demo, and cross-subsystem integration tests. Independent modules must keep injectable dependencies and avoid reading operational `.env` during tests.
 
-The existing `app/relationships/store.py` and `learning.py` are shared dependencies. Any teammate modifying them should identify migrations and lifecycle hooks in their PR. Do not assume root has already added category/intention fields or follow-up hooks; those are planned, not implemented.
+The existing `app/relationships/store.py` and `learning.py` are shared dependencies. Schema work must include backward-compatible migrations and source lifecycle hooks. Relationship intent fields and follow-up hooks are planned, not implemented.
 
 ## Contract checklist to include in each PR
 
@@ -58,7 +58,7 @@ The existing `app/relationships/store.py` and `learning.py` are shared dependenc
 
 ## Root integration acceptance tests
 
-After teammate contracts and branches arrive:
+As the independent modules are integrated:
 
 1. Existing group messages/approvals still work; one failing plan cannot starve another.
 2. Private dashboard authentication rejects unauthenticated reads/writes and forged/stale actions.
@@ -69,8 +69,8 @@ After teammate contracts and branches arrive:
 7. Lost provider response is retained as uncertain with no blind retry.
 8. Connected fixture demo links attention → stalled plan → available slot → reviewed draft → approved event, clearly labeled until live OAuth is configured.
 
-This document proposes handoff requirements. It does not claim teammate API contracts have been accepted or their modules completed.
+This document captures current implementation requirements; it does not claim that unfinished modules or live-provider setup are complete.
 
-## Integration ownership still to settle
+## Integration ownership
 
-Versioned draft-send/event action persistence (`relationships/actions.py` in the proposed plan) needs one agreed owner before implementation. Root will not prebuild it while frontend/calendar teammates define their contracts. The profile-preference fallback also crosses store/learner ownership and should be agreed in their handoff. Shared `create_app` dependencies must remain injectable for tests without reading operational `.env`.
+Root owns versioned draft-send/event action persistence and shared profile wiring for this implementation. Keep actions revision-bound and require separate approval for message sending and calendar event creation. Shared `create_app` dependencies must remain injectable for tests without reading operational `.env`.
