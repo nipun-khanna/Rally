@@ -41,19 +41,9 @@ def valid_approval(text: str) -> bool:
 
 def explicitly_addresses_rally(text: str) -> bool:
     """Recognize a plain-text call to Rally without reacting to incidental mentions."""
-    match = re.match(r"^\s*(?:(hey|hi|hello|yo|ok|okay)[,\s]+)?@?rally\b(.*)$",
-                     text, re.I | re.S)
-    if not match:
-        return False
-    rest = match.group(2).lstrip()
-    if match.group(1):
-        return True
-    if rest.startswith((",", ":", "?", "!", "-")):
-        return True
     return bool(re.match(
-        r"(?:can|could|would|will|what|when|where|why|how|who|do|does|did|"
-        r"should|please|help|find|suggest|tell|recap|summarize|update|"
-        r"remind|book|plan|give|show|hide|turn|enable|disable|set|change|send|open|any)\b", rest, re.I))
+        r"^\s*(?:(?:hey|hi|hello|yo|ok|okay)[,\s]+)?@?rally\b",
+        text, re.I))
 
 
 def valid_calendar_approval(text: str) -> bool:

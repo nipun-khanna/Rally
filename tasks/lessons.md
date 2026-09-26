@@ -68,3 +68,8 @@
 
 - User reported no response to an explicit Rally request. The trigger excluded imperative verbs such as turn, enable, and hide.
 - Rule: test actual user command wording through trigger detection and command handling; disabled capabilities must produce a deterministic explanation instead of falling through to model extraction.
+
+## 2026-09-26 — Respond to any direct Rally call
+
+- User correction: Rally must respond whenever explicitly called, regardless of the words after its name.
+- Rule: direct-address detection recognizes the name at message start with optional greeting/@ and does not use a command-verb allowlist. Test arbitrary statements, contextual requests, emojis, and the name alone; ordinary mid-sentence mentions remain distinct.

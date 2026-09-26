@@ -70,7 +70,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
 
     def test_incidental_name_and_ordinary_chat_do_not_prompt_reply(self):
-        for number, text in enumerate(("I saw a rally today", "Rally is a good name", "Dinner Friday?")):
+        for number, text in enumerate(("I saw a rally today", "We should ask Rally", "Dinner Friday?")):
             self.assertTrue(self.service.receive(ChatMessage(f"other-{number}", "chat1", "nick", text, NOW)))
         self.assertEqual(self.agent.direct_calls, [])
         self.assertEqual(self.sent, [])
