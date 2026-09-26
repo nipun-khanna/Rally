@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
+from threading import local
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,6 +20,7 @@ def stamp(value: datetime) -> str:
 class RelationshipStore:
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._local = local()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as db:
             db.executescript('''
@@ -60,16 +62,22 @@ class RelationshipStore:
 
     @contextmanager
     def db(self):
+        existing = getattr(self._local, 'db', None)
+        if existing is not None:
+            yield existing
+            return
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
         try:
             db.execute('BEGIN IMMEDIATE')
+            self._local.db = db
             yield db
             db.commit()
         except BaseException:
             db.rollback()
             raise
         finally:
+            self._local.db = None
             db.close()
 
     def configure(self, owner: str, destination: str, zone: str, hour: int = 18):
