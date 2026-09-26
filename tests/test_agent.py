@@ -1,0 +1,137 @@
+import unittest
+from datetime import datetime, timezone
+
+from app.agent import GrokClient
+from app.models import ChatMessage, PlanFacts
+
+
+class AgentTests(unittest.TestCase):
+    def setUp(self):
+        self.messages = [ChatMessage("m1", "chat", "nick", "Dinner Friday?", datetime(2026, 9, 22, 18, tzinfo=timezone.utc))]
+
+    def test_direct_answer_uses_group_context_and_validates_text(self):
+        calls = []
+        def transport(payload):
+            calls.append(payload)
+            return {"message": "Friday dinner is planned; the venue is still open."}
+        client = GrokClient("key", transport=transport)
+        facts = PlanFacts(activity="dinner", goal="Friday dinner")
+        reply = client.answer_direct("Hey Rally, what's the plan?", facts, self.messages)
+        self.assertIn("venue is still open", reply)
+        self.assertEqual(calls[0]["response_format"]["type"], "json_schema")
+        self.assertIn("Friday dinner", calls[0]["messages"][1]["content"])
+        with self.assertRaises(ValueError):
+            GrokClient("key", transport=lambda _: {"message": ""}).answer_direct(
+                "Rally, update?", facts, self.messages)
+        with self.assertRaises(ValueError):
+            GrokClient("key", transport=lambda _: {"message": "   "}).answer_direct(
+                "Rally, update?", facts, self.messages)
+
+    def test_extracts_evidence_backed_facts(self):
+        calls = []
+        messages = self.messages + [
+            ChatMessage("m2", "chat", "nick", "After 7, anything but sushi. Midtown, New York? Italian sounds good.",
+                        self.messages[0].sent_at)]
+        def transport(payload):
+            calls.append(payload)
+            return {"goal": "Friday dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": "2026-09-25", "time": None, "earliest_time": "19:00",
+                    "location": "Midtown, New York", "excluded_cuisines": ["sushi"],
+                    "preferred_cuisines": ["italian"],
+                    "objections": [], "blockers": ["venue missing"],
+                    "evidence": {"activity": ["m1"], "date": ["m1"],
+                                 "earliest_time": ["m2"], "location": ["m2"],
+                                 "excluded_cuisines": ["m2"],
+                                 "preferred_cuisines": ["m2"]},
+                    "confidence": 0.9, "abandoned": False}
+        facts = GrokClient("key", transport=transport).extract(messages, None)
+        self.assertEqual(facts.earliest_time, "19:00")
+        self.assertEqual(facts.preferred_cuisines, ["italian"])
+        self.assertEqual(facts.evidence["activity"], ["m1"])
+        self.assertEqual(calls[0]["response_format"]["type"], "json_schema")
+
+    def test_rejects_fabricated_participant(self):
+        def transport(payload):
+            return {"goal": "Dinner", "activity": "dinner", "participants": ["ghost"],
+                    "date": None, "time": None, "earliest_time": None, "location": None,
+                    "excluded_cuisines": [], "objections": [], "blockers": [],
+                    "evidence": {}, "confidence": 0.8, "abandoned": False}
+        with self.assertRaises(ValueError):
+            GrokClient("key", transport=transport).extract(self.messages, None)
+
+    def test_rejects_uncited_date(self):
+        def transport(payload):
+            return {"goal": "Friday dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": "2026-09-25", "time": None, "earliest_time": None,
+                    "location": None, "excluded_cuisines": [], "objections": [],
+                    "blockers": ["venue missing"], "evidence": {"activity": ["m1"]},
+                    "confidence": 0.9, "abandoned": False}
+        with self.assertRaisesRegex(ValueError, "date evidence"):
+            GrokClient("key", transport=transport).extract(self.messages, None)
+
+    def test_rejects_uncited_restriction(self):
+        def transport(payload):
+            return {"goal": "Dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": None, "time": None, "earliest_time": None,
+                    "location": None, "excluded_cuisines": ["sushi"], "objections": [],
+                    "blockers": ["venue missing"], "evidence": {"activity": ["m1"]},
+                    "confidence": 0.9, "abandoned": False}
+        with self.assertRaisesRegex(ValueError, "excluded_cuisines evidence"):
+            GrokClient("key", transport=transport).extract(self.messages, None)
+
+    def test_decision_must_be_known_action(self):
+        def transport(payload):
+            return {"action": "BUY", "reason": "venue", "tool": "search_places", "confidence": 0.9}
+        with self.assertRaises(ValueError):
+            GrokClient("key", transport=transport).decide(PlanFacts(activity="dinner"), self.messages)
+
+    def test_rejects_unresolved_relative_date_as_confirmed_date(self):
+        def transport(payload):
+            return {"goal": "Dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": "next Friday", "time": None, "earliest_time": None,
+                    "location": "Midtown", "excluded_cuisines": [], "objections": [],
+                    "blockers": ["date unclear"], "evidence": {"date": ["m1"]},
+                    "confidence": 0.8, "abandoned": False}
+        with self.assertRaises(ValueError):
+            GrokClient("key", transport=transport).extract(self.messages, None)
+
+    def test_resolves_friday_against_message_time_and_chat_zone(self):
+        message = ChatMessage("m-friday", "chat", "nick", "Dinner Friday?",
+                              datetime(2026, 9, 24, 2, 0, tzinfo=timezone.utc))
+        def response(date):
+            return {"goal": "Friday dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": date, "time": None, "earliest_time": None, "location": None,
+                    "excluded_cuisines": [], "objections": [], "blockers": ["venue missing"],
+                    "evidence": {"date": ["m-friday"]}, "confidence": 0.9, "abandoned": False}
+        client = GrokClient("key", transport=lambda payload: response("2026-09-25"),
+                            time_zone="America/New_York")
+        self.assertEqual(client.extract([message], None).date, "2026-09-25")
+        wrong = GrokClient("key", transport=lambda payload: response("2026-10-02"),
+                           time_zone="America/New_York")
+        with self.assertRaisesRegex(ValueError, "relative date"):
+            wrong.extract([message], None)
+
+    def test_rejects_wrong_tomorrow_resolution(self):
+        message = ChatMessage("m-tomorrow", "chat", "nick", "Dinner tomorrow?",
+                              datetime(2026, 9, 24, 2, 0, tzinfo=timezone.utc))
+        def transport(payload):
+            return {"goal": "Dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": "2026-09-25", "time": None, "earliest_time": None, "location": None,
+                    "excluded_cuisines": [], "objections": [], "blockers": ["venue missing"],
+                    "evidence": {"date": ["m-tomorrow"]}, "confidence": 0.9, "abandoned": False}
+        with self.assertRaisesRegex(ValueError, "relative date"):
+            GrokClient("key", transport=transport,
+                       time_zone="America/New_York").extract([message], None)
+
+    def test_extraction_keeps_unspecified_party_size_unknown(self):
+        def transport(payload):
+            return {"goal": "Dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": None, "time": None, "earliest_time": None, "location": None,
+                    "excluded_cuisines": [], "objections": [], "blockers": ["party size unclear"],
+                    "evidence": {}, "confidence": 0.7, "abandoned": False}
+        facts = GrokClient("key", transport=transport).extract(self.messages, None)
+        self.assertIsNone(facts.party_size)
+
+
+if __name__ == "__main__":
+    unittest.main()
