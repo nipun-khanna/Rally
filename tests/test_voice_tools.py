@@ -136,6 +136,19 @@ class SetIntentionTests(VoiceTestBase):
                                      "category": "not-a-category"})
         self.assertFalse(result["ok"])
 
+    def test_set_intention_without_days_uses_category_default(self):
+        self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
+        result = self.registry.call("set_intention",
+                                    {"label": "Grandma", "mode": "call", "category": "grandparent"})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["used_default_cadence"])
+        self.assertEqual(self.rel_store.list_relationships(OWNER)[0]["days"], 7)
+
+    def test_set_intention_without_days_or_category_is_rejected(self):
+        self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
+        result = self.registry.call("set_intention", {"label": "Mom", "mode": "call"})
+        self.assertFalse(result["ok"])
+
     def test_set_category_on_existing_relationship(self):
         self.rel_store.configure(OWNER, "iMessage;-;+15555550123", "America/New_York", 18)
         self.registry.call("set_intention", {"label": "Mom", "mode": "call", "days": 7})

@@ -38,7 +38,8 @@ def build_dashboard_data(relationship_store, owner: str) -> dict:
     return grouped
 
 
-def render_dashboard(grouped: dict[str, list[dict]]) -> str:
+def render_dashboard_body(grouped: dict[str, list[dict]]) -> str:
+    """Just the categorized sections, for embedding into another page (e.g. /voice)."""
     sections = []
     total_people = sum(len(v) for v in grouped.values())
     for category in _CATEGORY_ORDER:
@@ -70,6 +71,11 @@ def render_dashboard(grouped: dict[str, list[dict]]) -> str:
         "<p class='empty'>No relationships configured yet. Use "
         "\"Hey Rally, remind me to call Mom every week\" or the voice check-in "
         "to add one.</p>")
+    return f'<p class="sub">{total_people} tracked &middot; grouped by category</p>{body}'
+
+
+def render_dashboard(grouped: dict[str, list[dict]]) -> str:
+    """Standalone page wrapping render_dashboard_body in its own dark theme shell."""
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Rally Relationships</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -90,6 +96,5 @@ td {{ padding:6px 10px 6px 0; border-top:1px solid #14141d; }}
 </style></head>
 <body>
 <h1>Relationships</h1>
-<p class="sub">{total_people} tracked · grouped by category</p>
-{body}
+{render_dashboard_body(grouped)}
 </body></html>"""

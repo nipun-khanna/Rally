@@ -30,7 +30,30 @@ html, body {{ height: 100%; }}
 body {{
   margin: 0; background: var(--bg); color: var(--ink);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  display: flex; flex-direction: column;
+}}
+.layout {{
+  display: flex; height: 100%; min-height: 100vh;
+}}
+.main {{
+  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
+}}
+.sidebar {{
+  width: 340px; flex-shrink: 0; border-left: 1px solid var(--hair);
+  background: var(--panel); overflow-y: auto; padding: 20px;
+}}
+.sidebar h1 {{ font-size: 15px; font-weight: 600; margin: 0 0 2px; }}
+.sidebar section {{ margin-bottom: 22px; }}
+.sidebar h2 {{ font-size: 12px; font-weight: 600; color: var(--ink);
+  margin: 0 0 6px; border-bottom: 1px solid var(--hair); padding-bottom: 5px; }}
+.sidebar .count {{ color: var(--ink-dim); font-weight: 400; }}
+.sidebar .sub {{ color: var(--ink-dim); font-size: 12px; margin: 0 0 18px; }}
+.sidebar table {{ width: 100%; border-collapse: collapse; font-size: 11.5px; }}
+.sidebar th {{ text-align: left; color: var(--ink-dim); font-weight: 500; padding: 3px 6px 3px 0; }}
+.sidebar td {{ padding: 5px 6px 5px 0; border-top: 1px solid var(--bg); }}
+.sidebar .empty {{ color: var(--ink-dim); font-size: 12px; }}
+@media (max-width: 760px) {{
+  .layout {{ flex-direction: column; }}
+  .sidebar {{ width: auto; border-left: none; border-top: 1px solid var(--hair); }}
 }}
 .topbar {{
   display: flex; align-items: center; gap: 10px;
@@ -99,23 +122,31 @@ body {{
 @media (prefers-reduced-motion: reduce) {{ .orb {{ transition: none; }} }}
 </style></head>
 <body>
-<div class="topbar">
-  <div class="dot" id="dot"></div>
-  <div class="wordmark">Rally Voice</div>
-</div>
-<div class="stage">
-  <div class="orb-wrap" id="orbWrap" data-state="idle">
-    <div class="orb" id="orb"></div>
+<div class="layout">
+  <div class="main">
+    <div class="topbar">
+      <div class="dot" id="dot"></div>
+      <div class="wordmark">Rally Voice</div>
+    </div>
+    <div class="stage">
+      <div class="orb-wrap" id="orbWrap" data-state="idle">
+        <div class="orb" id="orb"></div>
+      </div>
+      <div class="caption" id="caption">Tap to connect</div>
+      <div class="hint" id="hint">Tap to start recording, tap again to send. Ask "who am I falling behind with?"</div>
+    </div>
+    <div class="activity">
+      <div class="activity-head" id="activityHead">
+        <span id="activitySummary">Activity &amp; debug log</span>
+        <button id="activityToggle">Show</button>
+      </div>
+      <div class="activity-log" id="log"></div>
+    </div>
   </div>
-  <div class="caption" id="caption">Tap to connect</div>
-  <div class="hint" id="hint">Tap to start recording, tap again to send. Ask "who am I falling behind with?"</div>
-</div>
-<div class="activity">
-  <div class="activity-head" id="activityHead">
-    <span id="activitySummary">Activity</span>
-    <button id="activityToggle">Show</button>
+  <div class="sidebar" id="sidebar">
+    <h1>Relationships</h1>
+    <p class="sub">Loading&hellip;</p>
   </div>
-  <div class="activity-log" id="log"></div>
 </div>
 <script>
 const ADMIN_TOKEN = {admin_token!r};
@@ -226,11 +257,24 @@ async function callBackendTool(name, args) {{
       method: 'POST', headers: {{'Content-Type':'application/json', 'X-Rally-Admin-Token': ADMIN_TOKEN}},
       body: JSON.stringify({{name, args}})
     }});
-    return await resp.json();
+    const result = await resp.json();
+    if (['set_intention', 'set_category', 'confirm_action'].includes(name)) refreshSidebar();
+    return result;
   }} catch (err) {{
     return {{ok: false, reason: 'Tool call failed: ' + err}};
   }}
 }}
+
+const sidebarEl = document.getElementById('sidebar');
+async function refreshSidebar() {{
+  try {{
+    const resp = await fetch('/dashboard/fragment?token=' + encodeURIComponent(ADMIN_TOKEN));
+    if (!resp.ok) return;
+    const html = await resp.text();
+    sidebarEl.innerHTML = '<h1>Relationships</h1>' + html;
+  }} catch (err) {{}}
+}}
+refreshSidebar();
 
 async function startMic() {{
   micStream = await navigator.mediaDevices.getUserMedia({{audio: true}});

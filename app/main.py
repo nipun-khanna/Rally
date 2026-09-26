@@ -244,15 +244,24 @@ def create_app(service=None, *, webhook_token: str | None = None,
         if not admin_token or not candidate or not hmac.compare_digest(candidate, admin_token):
             raise HTTPException(403, 'Admin token required')
 
+    def _dashboard_grouped():
+        if relationship_service is None:
+            raise HTTPException(404, 'Relationship dashboard is not enabled')
+        from app.relationships.dashboard_view import build_dashboard_data
+        owner = voice_owner or 'local-imessage-account'
+        return build_dashboard_data(relationship_service.store, owner)
+
     @app.get('/dashboard', response_class=HTMLResponse)
     def dashboard(token: str | None = None):
         authorize_admin(token)
-        if relationship_service is None:
-            raise HTTPException(404, 'Relationship dashboard is not enabled')
-        from app.relationships.dashboard_view import build_dashboard_data, render_dashboard
-        owner = voice_owner or 'local-imessage-account'
-        grouped = build_dashboard_data(relationship_service.store, owner)
-        return HTMLResponse(render_dashboard(grouped))
+        from app.relationships.dashboard_view import render_dashboard
+        return HTMLResponse(render_dashboard(_dashboard_grouped()))
+
+    @app.get('/dashboard/fragment', response_class=HTMLResponse)
+    def dashboard_fragment(token: str | None = None):
+        authorize_admin(token)
+        from app.relationships.dashboard_view import render_dashboard_body
+        return HTMLResponse(render_dashboard_body(_dashboard_grouped()))
 
     @app.get('/voice', response_class=HTMLResponse)
     def voice_page(token: str | None = None):

@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from app.relationships.store import CATEGORIES
+from app.relationships.store import CATEGORIES, DEFAULT_CADENCE_DAYS
 from typing import Callable
 
 
@@ -259,22 +259,33 @@ def build_voice_tools(owner: str, *, relationship_store, plan_store, service,
         category = args.get('category') or None
         if category is not None and category not in CATEGORIES:
             return {'ok': False, 'reason': f"category must be one of: {', '.join(CATEGORIES)}"}
+        days = args.get('days')
+        used_default = False
+        if days is None:
+            if category is None:
+                return {'ok': False, 'reason': 'Specify either a cadence in days or a category '
+                        'so I can pick a sensible default.'}
+            days = DEFAULT_CADENCE_DAYS[category]
+            used_default = True
         try:
             relationship_store.upsert(owner, args['label'], args['mode'],
-                                      int(args['days']), datetime.now(timezone.utc),
+                                      int(days), datetime.now(timezone.utc),
                                       category=category)
         except ValueError as exc:
             return {'ok': False, 'reason': str(exc)}
-        return {'ok': True, 'label': args['label'], 'mode': args['mode'], 'days': args['days'],
-                'category': category}
+        return {'ok': True, 'label': args['label'], 'mode': args['mode'], 'days': days,
+                'category': category, 'used_default_cadence': used_default}
 
     registry.register(VoiceTool(
         'set_intention', 'Create or update how often the user wants to stay in touch with '
         'someone, e.g. "call Grandma every week", optionally tagging their relationship '
-        'category (family, parent, grandparent, sibling, cousin, close_friend, friend, other).',
+        'category (family, parent, grandparent, sibling, cousin, close_friend, friend, other). '
+        'If the user only gives a category and no explicit cadence, omit days and a sensible '
+        'default cadence for that category is used automatically -- always tell the user what '
+        'cadence was picked so they can override it.',
         {'type': 'object', 'properties': {'label': {'type': 'string'}, 'mode': {'type': 'string'},
                                           'days': {'type': 'integer'}, 'category': {'type': 'string'}},
-         'required': ['label', 'mode', 'days']}, 'read', set_intention))
+         'required': ['label', 'mode']}, 'read', set_intention))
 
     def set_category(args: dict) -> dict:
         if args['category'] not in CATEGORIES:

@@ -14,6 +14,14 @@ from app.relationships.schedule import due_at, eligible
 CATEGORIES = ('family', 'parent', 'grandparent', 'sibling', 'cousin',
              'close_friend', 'friend', 'other')
 
+# Sensible default cadence (days) per category when the user doesn't state one.
+# Not a claim about anyone's actual relationship -- just a starting point they
+# can always override with an explicit "every N days".
+DEFAULT_CADENCE_DAYS = {
+    'family': 3, 'parent': 3, 'grandparent': 7, 'sibling': 7, 'cousin': 21,
+    'close_friend': 7, 'friend': 14, 'other': 30,
+}
+
 
 def stamp(value: datetime) -> str:
     if value.tzinfo is None:
