@@ -1,5 +1,20 @@
 # Rally MVP implementation tasks
 
+## Current teammate handoff — 2026-09-26
+
+The full PRD is **not complete**. No open teammate PRs were present at the last GitHub check. Pick one area below and open a focused branch/PR; include the route and data contract in the PR description. See [team ownership](../docs/team-ownership.md) and [relationship MVP plan](../docs/superpowers/plans/2026-09-26-relationship-mvp.md) for detail. Keep personal relationship data out of the public group portal and Vercel snapshots.
+
+| Priority | Owner | Task | Done when |
+| --- | --- | --- | --- |
+| 1 | Frontend teammate | **Private relationship dashboard:** attention cards, editable person profiles/categories/intentions, evidence and freshness, draft review, action states. Use local private routes; provide synthetic fixtures for preview. | Overdue person → suggested action → reviewed draft can be demonstrated with clear private authentication and unknown-data states. |
+| 1 | Backend teammate | **Local follow-up detection:** extract commitments and unfinished plans from explicitly selected conversations, retain source evidence, and implement dismiss/snooze/done plus edit/delete/disable lifecycle. | Fixture conversation creates a candidate; changing or disabling its source invalidates it without leaking source text to cloud/group portal. |
+| 1 | Backend teammate | **Calendar integration:** Google OAuth setup/verification, read-only free/busy, timezone-aware available slots, and version-bound approved event creation. Distinguish owner-only availability from mutual availability. | Connected or labeled fixture calendar produces a slot; edited details invalidate approval; duplicate approval creates at most one event. |
+| 2 | Frontend/infra teammate | **Website deployment:** GitHub → Vercel previews and production for website code, using synthetic data in previews and preserving the existing local group-portal publisher. | A PR produces a preview URL and a main push updates the website without publishing Mac SQLite or private relationship data. |
+| 2 | Root | **Shared integration:** review teammate contracts/PRs, connect dashboard → follow-up → planning → availability → reviewed draft → approved event, then run the PRD demo. | One connected test and browser demo pass, with live-provider gaps labeled honestly. |
+| 2 | Root | **iMessage/planning reliability:** resolve extraction timeouts and the 56 unprocessed group-message backlog without re-sending historical replies; verify live group response and approval safety. | New group messages are processed reliably; backlog recovery does not duplicate sends or silently skip plan changes. |
+
+Teammates should avoid editing `app/main.py`, `app/config.py`, and shared orchestration routes without coordinating interface changes. The dashboard, follow-up, calendar, and deployment areas remain assigned to humans. Root has already built the live BlueBubbles path, group planning foundation, web search, adaptive request registry, and inert code proposals; those are not new teammate tasks.
+
 ## Relationship maintenance service
 
 ### Two-profile feasibility test
