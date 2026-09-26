@@ -86,6 +86,48 @@ class Store:
         with self._db() as db:
             db.execute("UPDATE messages SET processed=1 WHERE message_id=?", (message_id,))
 
+    def recovery_snapshot(self, chat_id: str, limit: int = 75) -> tuple[list[ChatMessage], list[str]]:
+        """Return every message since the oldest pending one, or refuse a partial snapshot."""
+        if not 1 <= limit <= 200:
+            raise ValueError("Invalid recovery limit")
+        with self._db() as db:
+            oldest = db.execute("""SELECT min(sent_at) FROM messages
+                WHERE chat_id=? AND processed=0 AND is_from_rally=0""", (chat_id,)).fetchone()[0]
+            if oldest is None:
+                return [], []
+            rows = db.execute("""SELECT * FROM messages WHERE chat_id=? AND sent_at>=?
+                ORDER BY sent_at,message_id LIMIT ?""", (chat_id, oldest, limit + 1)).fetchall()
+        if len(rows) > limit:
+            raise ValueError("Pending conversation exceeds bounded recovery window")
+        messages = [ChatMessage(row["message_id"], row["chat_id"], row["sender_id"], row["text"],
+                                datetime.fromisoformat(row["sent_at"]), bool(row["is_from_rally"]))
+                    for row in rows]
+        pending_ids = [row["message_id"] for row in rows if not row["processed"] and not row["is_from_rally"]]
+        return messages, pending_ids
+
+    def pending_count(self, chat_id: str) -> int:
+        with self._db() as db:
+            return db.execute("""SELECT count(*) FROM messages WHERE chat_id=?
+                AND processed=0 AND is_from_rally=0""", (chat_id,)).fetchone()[0]
+
+    def mark_processed_many(self, chat_id: str, message_ids: list[str]) -> int:
+        ids = list(dict.fromkeys(message_ids))
+        if not ids:
+            return 0
+        if len(ids) > 200:
+            raise ValueError("Too many recovered messages")
+        placeholders = ",".join("?" for _ in ids)
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(f"SELECT message_id FROM messages WHERE chat_id=? AND message_id IN ({placeholders})",
+                              (chat_id, *ids)).fetchall()
+            if {row["message_id"] for row in rows} != set(ids):
+                raise ValueError("Recovered messages changed chat scope")
+            result = db.execute(f"""UPDATE messages SET processed=1
+                WHERE chat_id=? AND processed=0 AND message_id IN ({placeholders})""",
+                (chat_id, *ids))
+            return result.rowcount
+
     def has_unprocessed_prior(self, chat_id: str, message_id: str, sent_at: datetime) -> bool:
         with self._db() as db:
             row = db.execute("""SELECT 1 FROM messages WHERE chat_id=? AND message_id != ?
