@@ -14,6 +14,7 @@ from app.muse import MuseExtractor
 from app.orchestrator import RallyService
 from app.places import PlacesError, Venue, geocode_location, search_places
 from app.store import Store
+from app.web import GrokWebClient
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class Settings:
     portal_publish_approved: bool = False
     history_enabled: bool = True
     grok_extraction_timeout: float = 60
+    web_enabled: bool = False
+    web_daily_limit: int = 20
+    web_max_tool_calls: int = 3
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -53,6 +57,11 @@ class Settings:
         tick_seconds = int(source.get("RALLY_TICK_SECONDS", "60"))
         max_requests = int(source.get("RALLY_MAX_PLACE_REQUESTS", "100"))
         max_calendar_requests = int(source.get("RALLY_MAX_CALENDAR_REQUESTS", "20"))
+        web_enabled = source.get("RALLY_WEB_ENABLED", "0") == "1"
+        web_daily_limit = int(source.get("RALLY_WEB_DAILY_LIMIT", "20"))
+        web_max_tool_calls = int(source.get("RALLY_WEB_MAX_TOOL_CALLS", "3"))
+        if not 1 <= web_daily_limit <= 1000 or not 1 <= web_max_tool_calls <= 10:
+            raise ValueError("Invalid web search budget")
         calendar_enabled = source.get("RALLY_CALENDAR_ENABLED", "0") == "1"
         extraction_timeout = float(source.get("RALLY_GROK_EXTRACTION_TIMEOUT", "60"))
         if not 1 <= extraction_timeout <= 120:
@@ -99,6 +108,9 @@ class Settings:
             portal_publish_approved=source.get("RALLY_PORTAL_PUBLISH_APPROVED", "0") == "1",
             history_enabled=source.get("RALLY_HISTORY_ENABLED", "1") == "1",
             grok_extraction_timeout=extraction_timeout,
+            web_enabled=web_enabled,
+            web_daily_limit=web_daily_limit,
+            web_max_tool_calls=web_max_tool_calls,
         )
 
 
@@ -159,6 +171,18 @@ def build_service(settings: Settings) -> RallyService:
                 proposal, CalendarApproval(proposal.id, approval_message_id, True),
                 credentials, settings.time_zone, confirmation_id)
 
+    web_answer_fn = None
+    if settings.web_enabled:
+        web = GrokWebClient(settings.xai_api_key, settings.grok_model,
+                            max_tool_calls=settings.web_max_tool_calls)
+
+        def web_answer_fn(request: str, *, tone: str = 'neutral') -> str:
+            day = datetime.now(timezone.utc).date().isoformat()
+            if not store.consume_web_quota(day, settings.web_daily_limit):
+                return "Today's web search limit has been reached. Try again tomorrow."
+            return web.answer(request, tone=tone)
+
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
-                        allowed_chat_ids=settings.allowed_chat_ids)
+                        allowed_chat_ids=settings.allowed_chat_ids,
+                        web_answer_fn=web_answer_fn)

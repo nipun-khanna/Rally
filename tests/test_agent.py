@@ -175,3 +175,14 @@ class AgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_direct_answer_prompt_matches_group_tone():
+    from app.models import ChatMessage
+    at=datetime.now(timezone.utc)
+    seen=[]
+    client=GrokClient('key',transport=lambda payload: seen.append(payload) or {'message':'Sure'})
+    messages=[ChatMessage('c1','chat','friend','yo bro wanna eat lol',at)]
+    assert client.answer_direct('Rally, what do you think?',None,messages)=='Sure'
+    assert 'casual' in seen[0]['messages'][0]['content'].lower()
+    assert 'slang' in seen[0]['messages'][0]['content'].lower()

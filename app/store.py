@@ -44,6 +44,8 @@ class Store:
                     kind TEXT NOT NULL, ref_id TEXT, status TEXT NOT NULL, error TEXT);
                 CREATE TABLE IF NOT EXISTS provider_quota (
                     day TEXT PRIMARY KEY, request_count INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS web_quota (
+                    day TEXT PRIMARY KEY, request_count INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS calendar_quota (
                     day TEXT PRIMARY KEY, request_count INTEGER NOT NULL);
             """)
@@ -276,6 +278,15 @@ class Store:
             return False
         with self._db() as db:
             result = db.execute("""INSERT INTO provider_quota(day, request_count) VALUES (?, 1)
+                ON CONFLICT(day) DO UPDATE SET request_count=request_count+1
+                WHERE request_count < ?""", (day, daily_limit))
+            return result.rowcount == 1
+
+    def consume_web_quota(self, day: str, daily_limit: int) -> bool:
+        if daily_limit < 1:
+            return False
+        with self._db() as db:
+            result = db.execute("""INSERT INTO web_quota(day, request_count) VALUES (?, 1)
                 ON CONFLICT(day) DO UPDATE SET request_count=request_count+1
                 WHERE request_count < ?""", (day, daily_limit))
             return result.rowcount == 1

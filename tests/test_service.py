@@ -453,3 +453,53 @@ class ServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_web_answer_uses_read_only_search_and_survives_provider_failure(tmp_path):
+    from app.agent import GrokProviderError
+    from app.models import ChatMessage
+    from app.orchestrator import RallyService
+    from app.store import Store
+    store = Store(tmp_path / 'state.sqlite3')
+    called = []
+    sent = []
+    class Agent:
+        def answer_direct(self, *args):
+            raise AssertionError('web answer must bypass ordinary model')
+        def extract(self, *args):
+            raise AssertionError('web answer must not trigger plan extraction')
+    def failing_web(request, *, tone):
+        called.append(request)
+        raise GrokProviderError('timeout', 'webanswer')
+    service = RallyService(store, Agent(), lambda _: [], lambda chat,text: sent.append(text),
+                           web_answer_fn=failing_web)
+    message = ChatMessage('m-web', 'iMessage;+;group', 'friend',
+                          'Rally, find dinner nearby', NOW)
+    assert service.receive(message)
+    assert called == [message.text]
+    assert len(sent) == 1 and 'web search' in sent[0].lower()
+    assert store.is_processed('m-web')
+    assert not service.receive(message)
+    assert len(sent) == 1
+
+
+def test_web_answer_is_sent_once_without_following_extraction(tmp_path):
+    from app.models import ChatMessage
+    from app.orchestrator import RallyService
+    from app.store import Store
+    store=Store(tmp_path/'state.sqlite3')
+    searched=[]; sent=[]
+    class Agent:
+        def extract(self, *args):
+            raise AssertionError('web reply must not run plan extraction')
+        def answer_direct(self, *args):
+            raise AssertionError('web reply must use search')
+    service=RallyService(store,Agent(),lambda _:[],lambda chat,text:sent.append((chat,text)),
+                         web_answer_fn=lambda request,*,tone: searched.append((request,tone)) or 'Two public options: https://example.com')
+    message=ChatMessage('web-success','iMessage;+;group','friend','Rally find food nearby',NOW)
+    assert service.receive(message)
+    assert searched==[(message.text,'neutral')]
+    assert sent==[(message.chat_id,'Rally: Two public options: https://example.com')]
+    assert store.is_processed(message.message_id)
+    assert not service.receive(message)
+    assert len(sent)==1

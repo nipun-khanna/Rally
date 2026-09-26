@@ -13,6 +13,8 @@ from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
 from app.places import PlacesError
 from app.reservations import create_reservation
 from app.store import Store
+from app.web import should_search_web
+from app.tone import group_tone
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ def _log_scheduled_failure(phase: str, exc: Exception):
 class RallyService:
     def __init__(self, store: Store, agent, search_fn, send_fn, stall_minutes: int = 30,
                  extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None,
-                 portal_handler=None):
+                 portal_handler=None, web_answer_fn=None):
         self.store = store
         self.agent = agent
         self.extractor = extractor or agent
@@ -39,6 +41,7 @@ class RallyService:
         self.stall_minutes = stall_minutes
         self.allowed_chat_ids = None if allowed_chat_ids is None else frozenset(allowed_chat_ids)
         self.portal_handler = portal_handler
+        self.web_answer_fn = web_answer_fn
         self._lock = RLock()
 
     def _chat_allowed(self, chat_id: str) -> bool:
@@ -90,6 +93,16 @@ class RallyService:
                 "direct_reply", message.message_id):
             portal_answer = self.portal_handler(message) if self.portal_handler else None
             answer = portal_answer
+            if portal_answer is None and self.web_answer_fn and should_search_web(message.text):
+                try:
+                    answer = self.web_answer_fn(message.text, tone=group_tone(messages))
+                except Exception as exc:
+                    _log_scheduled_failure("web answer", exc)
+                    answer = "Web search isn't available right now, so I can't verify current options. Try again later."
+                self._queue_and_send(message.chat_id, f"Rally: {answer}",
+                                     "direct_reply", message.message_id)
+                self.store.mark_processed(message.message_id)
+                return True
             if portal_answer is None:
                 answer = self.agent.answer_direct(message.text, plan.facts if plan else None, messages)
             self._queue_and_send(message.chat_id, f"Rally: {answer}",

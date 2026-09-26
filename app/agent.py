@@ -11,6 +11,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import ChatMessage, PlanFacts
+from app.tone import group_tone
 
 
 class Extracted(BaseModel):
@@ -195,8 +196,10 @@ class GrokClient:
     def answer_direct(self, request: str, facts: PlanFacts | None,
                       messages: list[ChatMessage]) -> str:
         """Answer an explicit call using the group's current planning context."""
+        tone = group_tone(messages)
         prompt = (
             "You are Rally, a concise planning assistant in an iMessage group. "
+            f"The group tone is {tone}; match it naturally. For casual chat, use fitting slang and occasional profanity only if it suits the group. For formal chat, write formally. Do not imitate a specific person. "
             "A member explicitly addressed you. Reply to that member's request in at most "
             "two short sentences. Use the supplied plan and human messages as context, "
             "and say when a detail is unknown. Respond naturally to the request, including "
