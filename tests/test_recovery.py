@@ -63,6 +63,8 @@ def test_failed_recovery_acks_nothing_and_disallowed_chat_is_rejected(tmp_path):
     with pytest.raises(RuntimeError):
         rally.recover_pending('chat-a')
     assert not rally.store.is_processed('m1')
+    assert rally.store.pending_diagnostics('chat-a')['failures'] == [
+        {'stage':'extract','kind':'other','status':None,'count':1}]
     with pytest.raises(ValueError):
         rally.recover_pending('chat-b')
     assert sent == []
