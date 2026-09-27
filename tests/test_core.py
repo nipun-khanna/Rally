@@ -4,7 +4,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.models import ChatMessage, PlanFacts
-from app.policy import eligible_for_intervention, plan_state, valid_approval, valid_calendar_approval
+from app.policy import (eligible_for_intervention, eligible_for_revival,
+                        plan_state, unfinished_plan, valid_approval,
+                        valid_calendar_approval)
 from app.store import Store
 
 
@@ -25,6 +27,19 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(self.store.add_message(message))
         self.assertEqual(len(Store(self.store.path).recent_messages("chat1")), 1)
         self.assertEqual(Store(self.store.path).recent_messages("chat2"), [])
+
+    def test_unfinished_plan_revival_allows_stall_after_recent_rally(self):
+        facts = PlanFacts(activity="eat out", date="2026-09-26", location="Midtown")
+        plan = self.store.save_plan("chat1", facts, NOW - timedelta(minutes=20))
+        self.assertTrue(unfinished_plan(plan))
+        recent_rally = NOW - timedelta(minutes=6)
+        self.assertTrue(eligible_for_revival(
+            plan, NOW, last_rally_at=recent_rally, incoming_stall=True))
+        self.assertFalse(eligible_for_revival(
+            plan, NOW, last_rally_at=recent_rally, incoming_stall=False))
+        self.store.mark_intervened(plan.id, plan.version, NOW)
+        self.assertFalse(eligible_for_revival(
+            self.store.get_plan("chat1"), NOW, incoming_stall=True))
 
     def test_blocked_plan_waits_for_stall_and_nudges_once(self):
         facts = PlanFacts(goal="Friday dinner", activity="dinner", participants=["nick", "sarah"],

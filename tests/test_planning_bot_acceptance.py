@@ -296,29 +296,77 @@ def test_second_invoke_still_hydrates_thread_history(tmp_path):
     assert "won't fake a damn restaurant" not in body
 
 
-def test_unfinished_plan_stall_sends_one_unsolicited_revival(tmp_path):
-    service, _, sent, _ = make_service(tmp_path)
-    service.store.save_plan(CHAT_A, PlanFacts(
+def _unfinished_dinner(service, *, chat=CHAT_A, when=None):
+    service.store.save_plan(chat, PlanFacts(
         activity="eat out", date="2026-09-26", location="Midtown",
-        preferred_cuisines=["indian"]), NOW - timedelta(minutes=20))
-    before = len(sent)
-    service.receive(message("stall", "we still need to pick a spot", seconds=0))
+        preferred_cuisines=["indian"]), when or (NOW - timedelta(minutes=20)))
+
+
+def _assert_one_revival(sent, before):
     assert len(sent) == before + 1
     body = sent[-1][1].lower()
     assert "coward" not in body
     assert "won't fake a damn restaurant" not in body
     assert any(token in body for token in ("table", "indian", "midtown", "spot"))
+    return body
+
+
+def test_unfinished_plan_stall_sends_one_unsolicited_revival(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    _unfinished_dinner(service)
+    before = len(sent)
+    service.receive(message("stall", "we still need to pick a spot", seconds=0))
+    _assert_one_revival(sent, before)
     service.receive(message("again", "pick a place already", seconds=20))
     assert len(sent) == before + 1
 
 
 def test_idle_chatter_without_a_stall_does_not_nudge(tmp_path):
     service, _, sent, _ = make_service(tmp_path)
-    service.store.save_plan(CHAT_A, PlanFacts(
-        activity="eat out", date="2026-09-26", location="Midtown",
-        preferred_cuisines=["indian"]), NOW - timedelta(minutes=20))
+    _unfinished_dinner(service)
     service.receive(message("idle", "lol", seconds=0))
     assert sent == []
+
+
+def test_stall_nudge_after_five_minute_window_sends_one_revival(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    _unfinished_dinner(service)
+    service.receive(message("invoke", "Rally, recap the plan", seconds=0))
+    assert sent, "invoke should recap before the window closes"
+    before = len(sent)
+    service.receive(message("stall", "we still need to pick a spot", seconds=6 * 60))
+    _assert_one_revival(sent, before)
+    service.receive(message("again", "still deciding", seconds=6 * 60 + 20))
+    assert len(sent) == before + 1
+
+
+def test_finished_or_locked_plan_does_not_revive(tmp_path):
+    for state in ("DONE", "READY", "EXECUTING"):
+        service, _, sent, _ = make_service(tmp_path / state)
+        plan = service.store.save_plan(CHAT_A, PlanFacts(
+            activity="eat out", date="2026-09-26", location="Taj",
+            preferred_cuisines=["indian"]), NOW - timedelta(minutes=20))
+        service.store.set_state(plan.id, state)
+        service.receive(message("stall", "we still need to pick a spot", seconds=0))
+        assert sent == [], f"{state} plan must stay silent"
+
+
+def test_off_allowlist_unfinished_plan_does_not_revive(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    outside = "iMessage;+;outside"
+    _unfinished_dinner(service, chat=outside)
+    assert not service.receive(message("stall", "we still need to pick a spot", chat=outside))
+    assert service.tick(NOW) == 0
+    assert sent == []
+
+
+def test_tick_revives_unfinished_plan_after_long_gap(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    _unfinished_dinner(service, when=NOW - timedelta(minutes=20))
+    assert service.tick(NOW) == 1
+    _assert_one_revival(sent, 0)
+    assert service.tick(NOW + timedelta(minutes=1)) == 0
+    assert len(sent) == 1
 
 
 def test_active_turn_answers_followup_without_saying_rally(tmp_path):

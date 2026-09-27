@@ -14,6 +14,13 @@ _DONE = frozenset({
     "finished", "completed", "complete", "done", "succeeded", "success",
     "failed", "error", "stopped", "cancelled", "canceled",
 })
+_BROWSER_USE_MODELS = frozenset({
+    "glm-5.2", "grok-4.5", "grok-4.6", "glm-5.3-flash", "deepseek-v4-flash-vision",
+    "kimi-k3", "minimax-m3", "claude-opus-4.7", "claude-opus-4.8", "claude-opus-5",
+    "claude-fable-5", "claude-sonnet-5", "gpt-5.5", "gpt-5.6", "gpt-6-astra",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gemini-3.6-flash",
+    "gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash",
+})
 VENDOR_POLICY = (
     "Follow Rally policy. Never invent, type, or submit passwords, OTPs, "
     "payment cards, or other secrets. Do not complete a reservation, purchase, "
@@ -33,7 +40,9 @@ def _httpx_transport(method: str, url: str, api_key: str, body: dict | None,
         if body is not None:
             kwargs["json"] = body
         response = httpx.request(method, url, **kwargs)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            logger.warning("hosted browser http status=%s", response.status_code)
+            raise RuntimeError("Hosted browser request failed")
         data = response.json()
     except httpx.HTTPError:
         raise RuntimeError("Hosted browser request failed") from None
@@ -155,20 +164,22 @@ def _run_status(payload: dict) -> str:
 class BrowserUseClient:
     """Browser Use Cloud V4 agent. The vendor plans clicks, types, and extracts."""
 
-    def __init__(self, api_key: str, model: str = "grok-4.5", transport=None,
+    def __init__(self, api_key: str, model: str = "", transport=None,
                  sleeper=None):
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("Browser Use API key is required")
         self.api_key = api_key.strip()
-        self.model = (model or "grok-4.5").strip() or "grok-4.5"
+        chosen = (model or "").strip()
+        self.model = chosen if chosen in _BROWSER_USE_MODELS else ""
         self.transport = transport or _use_transport
         self.sleeper = sleeper or time.sleep
 
     def run_task(self, request: str, *, timeout_seconds: int = 180) -> dict:
         task = compose_browser_use_task(request)
-        created = self.transport(
-            "POST", f"{_USE_API}/runs", self.api_key,
-            {"task": task, "model": self.model})
+        body = {"task": task}
+        if self.model:
+            body["model"] = self.model
+        created = self.transport("POST", f"{_USE_API}/runs", self.api_key, body)
         if not isinstance(created, dict):
             raise RuntimeError("Browser Use run request failed")
         run_id = created.get("id") or created.get("runId") or created.get("run_id")
@@ -180,10 +191,14 @@ class BrowserUseClient:
         latest = created
         while time.monotonic() < deadline:
             latest = self.transport(
-                "GET", f"{_USE_API}/runs/{run_id}", self.api_key, None)
+                "GET", f"{_USE_API}/runs/{run_id}/status", self.api_key, None)
             if not isinstance(latest, dict):
                 raise RuntimeError("Browser Use run request failed")
             if _run_status(latest) in _DONE:
+                summary = self.transport(
+                    "GET", f"{_USE_API}/runs/{run_id}", self.api_key, None)
+                if isinstance(summary, dict):
+                    latest = summary
                 return self._normalize(latest)
             self.sleeper(1.0)
         raise TimeoutError("Browser Use run timed out")
