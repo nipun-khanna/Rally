@@ -65,6 +65,14 @@ class Settings:
     voice_enabled: bool = False
     voice_owner: str = "local-imessage-account"
     voice_model: str = "grok-voice-latest"
+    browser_enabled: bool = False
+    browser_owner_chat_id: str = ""
+    browser_owner_sender_id: str = ""
+    browser_admin_token: str = ""
+    browser_profile_path: Path = Path("data/browser/profile")
+    browser_download_path: Path = Path("data/browser/downloads")
+    browser_max_actions: int = 6
+    browser_max_text_chars: int = 6000
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -111,6 +119,30 @@ class Settings:
         xai_api_key = source.get("RALLY_XAI_API_KEY", "")
         if voice_enabled and not (admin_token and xai_api_key):
             raise ValueError("Voice is enabled without an admin token and xAI API key")
+        browser_enabled = source.get("RALLY_BROWSER_ENABLED", "0") == "1"
+        browser_owner_chat_id = source.get("RALLY_BROWSER_OWNER_CHAT_ID", "").strip()
+        browser_owner_sender_id = source.get("RALLY_BROWSER_OWNER_SENDER_ID", "").strip()
+        browser_admin_token = source.get("RALLY_BROWSER_ADMIN_TOKEN", "")
+        browser_profile_path = Path(source.get("RALLY_BROWSER_PROFILE_PATH", "data/browser/profile"))
+        browser_download_path = Path(source.get("RALLY_BROWSER_DOWNLOAD_PATH", "data/browser/downloads"))
+        browser_max_actions = int(source.get("RALLY_BROWSER_MAX_ACTIONS", "6"))
+        browser_max_text_chars = int(source.get("RALLY_BROWSER_MAX_TEXT_CHARS", "6000"))
+        if browser_enabled:
+            if (not browser_owner_chat_id.startswith("iMessage;-;") or
+                    not browser_owner_chat_id.removeprefix("iMessage;-;")):
+                raise ValueError("Browser owner must be a private iMessage chat")
+            if not browser_owner_sender_id:
+                raise ValueError("Browser owner sender ID is required")
+            browser_root = Path("data/browser").absolute()
+            if browser_root.resolve() != browser_root:
+                raise ValueError("Browser data directory must not be a symlink")
+            for path in (browser_profile_path, browser_download_path):
+                if not path.resolve().is_relative_to(browser_root) or path.resolve() == browser_root:
+                    raise ValueError("Browser paths must stay under data/browser/")
+            if not 1 <= browser_max_actions <= 12 or not 1000 <= browser_max_text_chars <= 12000:
+                raise ValueError("Invalid browser action or observation limit")
+            if browser_admin_token and (len(browser_admin_token) < 32 or browser_admin_token == admin_token):
+                raise ValueError("Browser admin token must be separate and at least 32 characters")
         return cls(
             database_path=Path(source.get("RALLY_DATABASE_PATH", "data/rally.sqlite3")),
             webhook_token=source.get("RALLY_WEBHOOK_TOKEN", ""),
@@ -153,6 +185,14 @@ class Settings:
             voice_enabled=voice_enabled,
             voice_owner=source.get("RALLY_VOICE_OWNER", "local-imessage-account"),
             voice_model=source.get("RALLY_VOICE_MODEL", "grok-voice-latest"),
+            browser_enabled=browser_enabled,
+            browser_owner_chat_id=browser_owner_chat_id,
+            browser_owner_sender_id=browser_owner_sender_id,
+            browser_admin_token=browser_admin_token,
+            browser_profile_path=browser_profile_path,
+            browser_download_path=browser_download_path,
+            browser_max_actions=browser_max_actions,
+            browser_max_text_chars=browser_max_text_chars,
         )
 
 

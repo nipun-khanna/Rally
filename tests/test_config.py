@@ -2,12 +2,66 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import pytest
 
 from app.config import Settings, build_service
 from app.agent import GrokClient
 from app.muse import MuseExtractor
 from app.calendar import CalendarEvent, CalendarError
 from app.models import Proposal
+
+
+def test_browser_defaults_off_and_requires_private_owner():
+    settings = Settings.from_env({})
+    assert settings.browser_enabled is False
+    assert settings.browser_owner_chat_id == ""
+    assert settings.browser_owner_sender_id == ""
+
+    with pytest.raises(ValueError):
+        Settings.from_env({"RALLY_BROWSER_ENABLED": "1"})
+
+
+@pytest.mark.parametrize("override", [
+    {"RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;+;group"},
+    {"RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;-;"},
+    {"RALLY_BROWSER_OWNER_CHAT_ID": "other;-;person"},
+    {"RALLY_BROWSER_OWNER_SENDER_ID": ""},
+    {"RALLY_BROWSER_PROFILE_PATH": "data/other/profile"},
+    {"RALLY_BROWSER_PROFILE_PATH": "data/browser/../other"},
+    {"RALLY_BROWSER_DOWNLOAD_PATH": "data/other/downloads"},
+    {"RALLY_BROWSER_MAX_ACTIONS": "0"},
+    {"RALLY_BROWSER_MAX_ACTIONS": "13"},
+    {"RALLY_BROWSER_MAX_TEXT_CHARS": "999"},
+    {"RALLY_BROWSER_MAX_TEXT_CHARS": "12001"},
+])
+def test_browser_rejects_unsafe_enabled_configuration(override):
+    env = {"RALLY_BROWSER_ENABLED": "1",
+           "RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;-;owner",
+           "RALLY_BROWSER_OWNER_SENDER_ID": "+15555550123"}
+    env.update(override)
+    with pytest.raises(ValueError):
+        Settings.from_env(env)
+
+
+def test_browser_accepts_limits_and_paths_within_ignored_directory():
+    settings = Settings.from_env({
+        "RALLY_BROWSER_ENABLED": "1",
+        "RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;-;owner",
+        "RALLY_BROWSER_OWNER_SENDER_ID": "+15555550123",
+        "RALLY_BROWSER_ADMIN_TOKEN": "W6SWqB8dA_5f5SUS2ms-CNu0WhxFLBL34ff2A7vfVBQ",
+        "RALLY_BROWSER_PROFILE_PATH": "data/browser/custom-profile",
+        "RALLY_BROWSER_DOWNLOAD_PATH": "data/browser/custom-downloads",
+        "RALLY_BROWSER_MAX_ACTIONS": "12",
+        "RALLY_BROWSER_MAX_TEXT_CHARS": "12000",
+    })
+    assert settings.browser_enabled is True
+    assert settings.browser_owner_chat_id == "iMessage;-;owner"
+    assert settings.browser_owner_sender_id == "+15555550123"
+    assert settings.browser_admin_token == "W6SWqB8dA_5f5SUS2ms-CNu0WhxFLBL34ff2A7vfVBQ"
+    assert settings.browser_profile_path == Path("data/browser/custom-profile")
+    assert settings.browser_download_path == Path("data/browser/custom-downloads")
+    assert settings.browser_max_actions == 12
+    assert settings.browser_max_text_chars == 12000
 
 
 class ConfigTests(unittest.TestCase):
