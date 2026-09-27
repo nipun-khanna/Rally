@@ -173,9 +173,9 @@ class ServiceTests(unittest.TestCase):
 
     def test_short_question_after_direct_reply_carries_one_followup_turn(self):
         first = ChatMessage("direct-followup-1", "chat1", "nick",
-                            "Rally, what can you help with?", NOW)
+                            "Rally, what's the vibe?", NOW)
         followup = ChatMessage("direct-followup-2", "chat1", "sarah",
-                               "What can you do?", NOW + timedelta(minutes=1))
+                               "What time works?", NOW + timedelta(minutes=1))
 
         self.assertTrue(self.service.receive(first))
         self.assertTrue(self.service.receive(followup))
@@ -191,10 +191,10 @@ class ServiceTests(unittest.TestCase):
                                 "Dinner is at seven", NOW + timedelta(minutes=1))
         self.service.receive(unrelated)
         later = ChatMessage("direct-boundary-3", "chat1", "sarah",
-                            "What can you do?", NOW + timedelta(minutes=2))
+                            "What time works?", NOW + timedelta(minutes=2))
         self.service.receive(later)
         stale = ChatMessage("direct-boundary-4", "chat1", "sarah",
-                            "What can you do?", NOW + timedelta(minutes=6))
+                            "What time works?", NOW + timedelta(minutes=6))
         self.service.receive(stale)
 
         self.assertEqual([call[0] for call in self.agent.direct_calls], [first.text])
