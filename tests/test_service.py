@@ -129,6 +129,48 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(self.service.receive(ChatMessage("react-fail", "chat1", "nick", "Rally, recap?", NOW)))
         self.assertEqual(reactions, ["👀"])
 
+    def test_direct_reply_sends_in_the_inbound_message_thread(self):
+        sent = []
+
+        def send(chat_id, text, selected_message_guid=None):
+            sent.append((chat_id, text, selected_message_guid))
+
+        self.service.send_fn = send
+        message = ChatMessage("inbound-guid", "chat1", "nick", "Hey Rally, recap?", NOW)
+        self.assertTrue(self.service.receive(message))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "chat1")
+        self.assertTrue(sent[0][1])
+        self.assertEqual(sent[0][2], "inbound-guid")
+
+    def test_eyes_attempted_when_invalid_guid_does_not_crash_receive(self):
+        reactions = []
+
+        def react(chat_id, message_id, reaction):
+            reactions.append((chat_id, message_id, reaction))
+            raise ValueError("A target message GUID is required")
+
+        sent = []
+
+        def send(chat_id, text, selected_message_guid=None):
+            sent.append((chat_id, text, selected_message_guid))
+
+        self.service.react_fn = react
+        self.service.send_fn = send
+        message = ChatMessage("bad guid", "chat1", "nick", "Rally, recap?", NOW)
+        self.assertTrue(self.service.receive(message))
+        self.assertEqual(reactions[0], ("chat1", "bad guid", "👀"))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][2], "bad guid")
+
+    def test_seen_message_warms_helper_without_blocking_reply(self):
+        warmed = []
+        self.service.helper_warm_fn = lambda: warmed.append("warm")
+        self.assertTrue(self.service.receive(
+            ChatMessage("warm-1", "chat1", "nick", "Rally, recap?", NOW)))
+        self.assertEqual(warmed, ["warm"])
+        self.assertEqual(len(self.sent), 1)
+
     def test_short_question_after_direct_reply_carries_one_followup_turn(self):
         first = ChatMessage("direct-followup-1", "chat1", "nick",
                             "Rally, what can you help with?", NOW)

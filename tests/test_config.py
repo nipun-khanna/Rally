@@ -166,6 +166,32 @@ class ConfigTests(unittest.TestCase):
             self.assertIs(react.call_args.kwargs.get("wait_for_helper"), False)
             self.assertIs(typing.call_args.kwargs.get("wait_for_helper"), False)
 
+    def test_live_send_forwards_thread_guid_and_react_swallows_invalid_guid(self):
+        from app.reactions import ReactionResult
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings.from_env({
+                "RALLY_DATABASE_PATH": str(Path(tmp) / "r.sqlite3"),
+                "RALLY_BLUEBUBBLES_URL": "http://127.0.0.1:1234",
+                "RALLY_BLUEBUBBLES_PASSWORD": "secret",
+            })
+            connected = ReactionResult("sent", "BlueBubbles Private API helper is connected")
+            with patch("app.config.helper_status", return_value=connected), \
+                    patch("app.config.send_message") as send:
+                service = build_service(settings)
+                service.send_fn("any;+;chat1", "got it", selected_message_guid="inbound-1")
+            self.assertEqual(send.call_args.args[2], "any;+;chat1")
+            self.assertEqual(send.call_args.kwargs.get("selected_message_guid"), "inbound-1")
+            self.assertTrue(send.call_args.args[3].startswith("Rally: "))
+            unsupported = ReactionResult("unsupported", "BlueBubbles Private API helper is not connected")
+            with patch("app.config.helper_status", return_value=unsupported), \
+                    patch("app.config.send_message") as send:
+                service = build_service(settings)
+                service.send_fn("any;+;chat1", "got it", selected_message_guid="inbound-1")
+            self.assertIsNone(send.call_args.kwargs.get("selected_message_guid"))
+            with patch("app.config.send_reaction", side_effect=ValueError("bad guid")):
+                service = build_service(settings)
+                self.assertIsNone(service.react_fn("not-a-group", "bad guid", "👀"))
+
     def test_calendar_is_opt_in_and_capped_before_provider_call(self):
         with self.assertRaises(ValueError):
             Settings.from_env({"RALLY_CALENDAR_ENABLED": "1"})

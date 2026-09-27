@@ -129,8 +129,44 @@ class BlueBubblesTests(unittest.TestCase):
         self.assertEqual(body["chatGuid"], "iMessage;+;chat123")
         self.assertEqual(body["message"], "Here is a venue")
         self.assertTrue(body["tempGuid"])
+        self.assertNotIn("selectedMessageGuid", body)
+        self.assertNotIn("partIndex", body)
         self.assertEqual(result["data"]["guid"], "sent-1")
         self.assertGreaterEqual(captured["timeout"], 30)
+
+    def test_send_message_includes_selected_message_guid_for_thread_reply(self):
+        captured = {}
+
+        def opener(request, timeout):
+            captured["body"] = json.loads(request.data)
+            return FakeResponse({"status": 200, "message": "Message sent!", "data": {"guid": "sent-2"}})
+
+        result = send_message(
+            "https://bb.example/", "pw", "any;+;chat536074477903103142",
+            "Rally: locked-in chaos.", opener=opener,
+            selected_message_guid="inbound-guid-1",
+        )
+        self.assertEqual(captured["body"]["chatGuid"], "any;+;chat536074477903103142")
+        self.assertEqual(captured["body"]["message"], "Rally: locked-in chaos.")
+        self.assertEqual(captured["body"]["selectedMessageGuid"], "inbound-guid-1")
+        self.assertEqual(captured["body"]["partIndex"], 0)
+        self.assertTrue(captured["body"]["tempGuid"])
+        self.assertEqual(result["data"]["guid"], "sent-2")
+
+    def test_invalid_selected_message_guid_still_sends_unthreaded(self):
+        captured = {}
+
+        def opener(request, timeout):
+            captured["body"] = json.loads(request.data)
+            return FakeResponse({"status": 200, "message": "Message sent!", "data": {"guid": "sent-3"}})
+
+        send_message(
+            "https://bb.example/", "pw", "any;+;chat1", "Rally: still sending.",
+            opener=opener, selected_message_guid="bad guid",
+        )
+        self.assertEqual(captured["body"]["message"], "Rally: still sending.")
+        self.assertNotIn("selectedMessageGuid", captured["body"])
+        self.assertNotIn("partIndex", captured["body"])
 
     def test_never_exposes_password_from_transport_error(self):
         def failing_opener(request, timeout):

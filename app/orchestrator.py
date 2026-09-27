@@ -41,6 +41,9 @@ _RECAP_ASK = re.compile(
     re.I,
 )
 _PICK_ASK = re.compile(r"\b(pick|lock|choose|decide)\b", re.I)
+_THREADED_OUTBOX_KINDS = frozenset({
+    "direct_reply", "availability_ack", "availability_clarify",
+})
 
 
 def _named_option_pick(request: str, facts) -> str | None:
@@ -101,7 +104,7 @@ class RallyService:
                  portal_handler=None, web_answer_fn=None, adaptive_handler=None,
                  availability_fn=None, time_zone: str = "America/New_York", reply_agent=None,
                  group_memory=None, group_turns=None, react_fn=None, typing_fn=None,
-                 defer_heavy_work: bool = False, history_fn=None):
+                 defer_heavy_work: bool = False, history_fn=None, helper_warm_fn=None):
         self.store = store
         self.agent = agent
         self.reply_agent = reply_agent or agent
@@ -122,6 +125,7 @@ class RallyService:
         self.typing_fn = typing_fn
         self.defer_heavy_work = defer_heavy_work
         self.history_fn = history_fn
+        self.helper_warm_fn = helper_warm_fn
         self._thread_hydrated: set[str] = set()
         self._chat_locks_guard = Lock()
         self._chat_locks = {}
@@ -680,6 +684,7 @@ class RallyService:
             message.chat_id, message.text, message.sent_at))
         if not coalesced:
             self._react(message, SEEN_REACTION)
+            self._warm_helper()
         if direct_call:
             forget = parse_forget_command(message.text)
             if forget is not None:
@@ -921,6 +926,18 @@ class RallyService:
         else:
             self._react(message, None)
 
+    def _warm_helper(self):
+        if not self.helper_warm_fn:
+            return
+
+        def run():
+            try:
+                self.helper_warm_fn()
+            except Exception as exc:
+                _log_scheduled_failure("helper warmup", exc)
+
+        self._side_effect(run)
+
     def _side_effect(self, fn):
         if self.defer_heavy_work:
             self._executor().submit(fn)
@@ -998,6 +1015,15 @@ class RallyService:
         elapsed_ms = 0 if not started else int((time.perf_counter() - started) * 1000)
         logger.warning("group_conversation stage=%s elapsed_ms=%s", stage, elapsed_ms)
 
+    def _invoke_send(self, chat_id: str, text: str, selected_message_guid: str | None = None):
+        """Call send_fn with a thread target when the installed callback accepts it."""
+        if not selected_message_guid:
+            return self.send_fn(chat_id, text)
+        try:
+            return self.send_fn(chat_id, text, selected_message_guid=selected_message_guid)
+        except TypeError:
+            return self.send_fn(chat_id, text)
+
     def _queue_and_send(self, chat_id: str, text: str, kind: str, ref_id: str):
         started = time.perf_counter()
         self.store.queue_message(chat_id, remove_rally_signature(text), kind, ref_id)
@@ -1012,7 +1038,10 @@ class RallyService:
             with self._chat_lock(current_chat_id):
                 started = perf_counter()
                 try:
-                    self.send_fn(current_chat_id, remove_rally_signature(item["text"]))
+                    self._invoke_send(
+                        current_chat_id, remove_rally_signature(item["text"]),
+                        selected_message_guid=item["ref_id"] if item["kind"] in _THREADED_OUTBOX_KINDS else None,
+                    )
                 except DeliveryUncertainError:
                     self.store.set_delivery(item["id"], "uncertain", "Inspect the iMessage thread before retrying")
                     continue
