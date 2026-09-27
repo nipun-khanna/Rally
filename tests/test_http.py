@@ -50,7 +50,7 @@ class HttpTests(unittest.TestCase):
 
     def test_addressed_group_webhook_sends_one_same_thread_reply(self):
         payload = {"type": "new-message", "data": {
-            "guid": "direct-http", "text": "Hey Rally, what's the plan?", "isFromMe": False,
+            "guid": "direct-http", "text": "Hey Rally, where should we eat?", "isFromMe": False,
             "handle": {"address": "sarah"}, "chats": [{"guid": CHAT}],
             "dateCreated": int(NOW.timestamp() * 1000)}}
         url = "/webhooks/bluebubbles?token=secret"

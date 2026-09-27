@@ -84,7 +84,7 @@ def test_selected_direct_source_observed_with_global_history_off(tmp_path):
 
 def test_group_planning_unchanged_and_archive_disabled(tmp_path):
     client, private, group, portal, sent = setup(tmp_path)
-    response = client.post('/webhooks/bluebubbles?token=secret', json=payload(GROUP, 'Hey Rally, whats the plan'))
+    response = client.post('/webhooks/bluebubbles?token=secret', json=payload(GROUP, 'Hey Rally, where should we eat'))
     assert response.json()['accepted']
     assert sent == [(GROUP, 'group reply')]
     assert portal.list_messages(GROUP) == []
