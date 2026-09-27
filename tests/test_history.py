@@ -158,6 +158,30 @@ def test_sync_member_labels_covers_silent_participants_and_sets_title(tmp_path):
     assert store.group_for_chat(chat_id)["title"] == "Tester"
 
 
+def test_completed_import_refreshes_a_renamed_contact_label(tmp_path):
+    class Client:
+        def fetch_messages(self, _chat, limit, offset):
+            assert limit == 100
+            assert offset == 1
+            return []
+
+        def fetch_contacts(self):
+            return [{"displayName": "Akhil Renamed", "phoneNumbers": [{"address": "+15550001111"}]}]
+
+        def fetch_chat_metadata(self, _chat):
+            return {"participants": [{"address": "+15550001111"}]}
+
+    store = PortalStore(tmp_path / "rally.sqlite3")
+    chat_id = "any;+;test"
+    store.ensure_group(chat_id)
+    store.set_member(chat_id, "+15550001111", "Akhil Old Name")
+    store.set_import_state(chat_id, cursor="1", status="complete")
+
+    assert HistoryImporter(Client(), store, tmp_path).import_page(chat_id) == 0
+    members = {m["sender_id"]: m["display_name"] for m in store.members(chat_id)}
+    assert members["+15550001111"] == "Akhil Renamed"
+
+
 def test_media_only_webhook_is_archived():
     message = normalize_archive_message({
         "guid": "m2", "dateCreated": 2000, "isFromMe": True, "text": None,

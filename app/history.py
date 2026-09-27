@@ -207,7 +207,12 @@ class HistoryImporter:
             next_offset = offset + len(source)
             self.store.set_import_state(chat_id, cursor=str(next_offset),
                                         status="complete" if len(source) < limit else "pending")
-            if len(source) < limit and hasattr(self.client, "fetch_contacts"):
+            # Contacts can change without any message history changing. Refresh at
+            # the beginning of a scan (and when it finishes) so a renamed contact
+            # replaces the cached portal label on the next scheduled or manual
+            # archive refresh. Avoid doing the extra contacts lookup for every
+            # middle page of a large backfill.
+            if (offset == 0 or len(source) < limit) and hasattr(self.client, "fetch_contacts"):
                 try:
                     self.sync_member_labels(chat_id)
                 except HistoryFetchError:
