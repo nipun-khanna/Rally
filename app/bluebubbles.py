@@ -1,8 +1,9 @@
 """BlueBubbles webhook and text-message transport for Rally.
 
 BlueBubbles posts ``new-message`` events with the message in ``data``.
-The chat GUID in that event is reused when sending a reply, preserving the
-original group conversation.
+The chat GUID in that event is reused when sending a reply. v1.9.9
+``POST /api/v1/message/text`` also accepts ``selectedMessageGuid`` and
+``partIndex`` so a reply can sit in that inbound message's iMessage thread.
 """
 
 from __future__ import annotations
@@ -95,17 +96,27 @@ def normalize_webhook(payload: Any, *, allowed_direct_chat_ids=frozenset()) -> I
     return None
 
 
+# BlueBubbles v1.9.9 sendText accepts selectedMessageGuid + partIndex to reply
+# in that message's iMessage thread. That field forces Private API. Invalid
+# GUIDs are omitted so unthreaded text still sends.
+_MESSAGE_GUID = re.compile(r"^[^\s\x00-\x1f\x7f]+$")
+
+
 def send_message(
     base_url: str,
     password: str,
     chat_id: str,
     text: str,
     opener: Callable[..., Any] = urlopen,
+    *,
+    selected_message_guid: str | None = None,
 ) -> dict[str, Any]:
     """Send text to a BlueBubbles chat and return its JSON response.
 
     Failures use fixed messages because HTTP exceptions may contain the URL,
-    including its password query parameter.
+    including its password query parameter. When ``selected_message_guid`` is a
+    usable message GUID, the payload includes ``selectedMessageGuid`` so the
+    reply lands in that inbound message's thread.
     """
     if not all(isinstance(value, str) and value for value in (password, chat_id, text)):
         raise ValueError("BlueBubbles password, chat ID, and text are required")
@@ -117,9 +128,11 @@ def send_message(
 
     path = parsed.path.rstrip("/") + "/api/v1/message/text"
     url = urlunsplit((parsed.scheme, parsed.netloc, path, urlencode({"password": password}), ""))
-    body = json.dumps(
-        {"chatGuid": chat_id, "message": text, "tempGuid": str(uuid4())}
-    ).encode("utf-8")
+    payload = {"chatGuid": chat_id, "message": text, "tempGuid": str(uuid4())}
+    if isinstance(selected_message_guid, str) and _MESSAGE_GUID.fullmatch(selected_message_guid):
+        payload["selectedMessageGuid"] = selected_message_guid
+        payload["partIndex"] = 0
+    body = json.dumps(payload).encode("utf-8")
     request = Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
 
     try:
