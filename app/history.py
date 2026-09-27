@@ -11,7 +11,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from app.models import ChatMessage
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -61,6 +61,18 @@ def normalize_archive_message(item: dict[str, Any], chat_id: str) -> dict[str, A
     }
 
 
+def planning_message_from_archive(item: dict[str, Any], chat_id: str) -> ChatMessage | None:
+    """Turn a BlueBubbles history row into a live planning ChatMessage, or skip it."""
+    raw = normalize_archive_message(item, chat_id)
+    if raw is None or raw["is_deleted"] or raw["reaction_type"]:
+        return None
+    text = (raw["text"] or "").strip()
+    if not text:
+        return None
+    from_rally = text.casefold().startswith("rally:")
+    return ChatMessage(raw["message_id"], chat_id, raw["sender_id"], text, raw["sent_at"], from_rally)
+
+
 class BlueBubblesHistoryClient:
     def __init__(self, base_url: str, password: str, opener: Callable[..., Any] = urlopen):
         parsed = urlsplit(base_url)
@@ -79,13 +91,23 @@ class BlueBubblesHistoryClient:
 
     def fetch_messages(self, chat_id: str, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         """Fetch one oldest-first page, including handle and attachment relations."""
+        return self._fetch_messages(chat_id, limit=limit, offset=offset, sort="ASC", timeout=60)
+
+    def fetch_recent_messages(self, chat_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch the newest messages first for live conversation context."""
+        if not 1 <= limit <= 100:
+            raise ValueError("Invalid history page")
+        return self._fetch_messages(chat_id, limit=limit, offset=0, sort="DESC", timeout=8)
+
+    def _fetch_messages(self, chat_id: str, *, limit: int, offset: int, sort: str,
+                        timeout: int) -> list[dict[str, Any]]:
         if not chat_id or not (1 <= limit <= 500) or offset < 0:
             raise ValueError("Invalid history page")
         path = f"/api/v1/chat/{quote(chat_id, safe='')}/message"
-        url = self._url(path, limit=limit, offset=offset, sort="ASC",
+        url = self._url(path, limit=limit, offset=offset, sort=sort,
                         **{"with": "handle,attachment"})
         try:
-            with self._opener(Request(url), timeout=60) as response:
+            with self._opener(Request(url), timeout=timeout) as response:
                 body = json.load(response)
         except (HTTPError, URLError, OSError, UnicodeError, json.JSONDecodeError):
             raise HistoryFetchError("BlueBubbles history request failed") from None

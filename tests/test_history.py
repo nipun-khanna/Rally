@@ -30,6 +30,19 @@ def test_fetch_page_encodes_chat_guid_and_requests_ascending_history():
     assert "with=handle%2Cattachment" in seen[0][0]
 
 
+def test_fetch_recent_requests_newest_messages_first():
+    seen = []
+
+    def opener(request, timeout):
+        seen.append(request.full_url)
+        return Response(json.dumps({"status": 200, "data": [{"guid": "new"}]}).encode())
+
+    client = BlueBubblesHistoryClient("http://127.0.0.1:1234", "secret", opener)
+    assert client.fetch_recent_messages("iMessage;+;chat1", limit=40) == [{"guid": "new"}]
+    assert "sort=DESC" in seen[0]
+    assert "limit=40" in seen[0]
+
+
 def test_error_does_not_expose_password():
     def failing(*_args, **_kwargs):
         raise URLError("secret")

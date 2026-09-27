@@ -6,6 +6,8 @@ Rally can join allowlisted iMessage groups after someone calls it, then stay in 
 
 A message that starts with `Rally` (optional greeting) opens a five-minute turn in that group. Any member can continue the same request. Rally replies to a follow-up only while the turn is fresh, the follow-up is about the active request, and nothing unrelated has closed it. Ordinary chat stays quiet.
 
+On the first call in a chat, Rally pulls recent BlueBubbles history for that group (newest first, bounded) so it can recap and decide from messages sent **before** anyone invoked it. Those backfilled lines are stored as already processed so they do not replay as new webhooks. The public archive import stays separate.
+
 A relevant message can still get no text if there is nothing useful to add. Rapid repeats of the same call are coalesced. At most three group replies go out per chat in a rolling minute. Booking approval, availability answers, portal commands, and forget/safety refusals stay available.
 
 Duplicate webhooks reuse the same message ID, so they produce at most one reply and one reaction. Restarts do not treat old messages as new requests.
