@@ -10,7 +10,8 @@ from pathlib import Path
 
 from app.config import Settings
 from app.portal_store import PortalStore
-from scripts.export_portal import export_portal
+from app.store import Store
+from scripts.export_portal import export_group, export_portal
 
 
 def _digest(directory: Path) -> str:
@@ -25,19 +26,7 @@ def _digest(directory: Path) -> str:
     return hasher.hexdigest()
 
 
-def publish(settings: Settings, *, project: str = "rallyplans",
-            output_dir: str | Path = "data/portal_build") -> str:
-    """Rebuild and deploy only when every archive import completed and content changed."""
-    if os.environ.get("RALLY_PORTAL_PUBLISH_APPROVED") != "1":
-        raise RuntimeError("External publication has not been enabled")
-    portal_store = PortalStore(settings.database_path)
-    if not settings.allowed_chat_ids or any(
-            portal_store.import_state(chat_id)["status"] != "complete"
-            for chat_id in settings.allowed_chat_ids):
-        return "waiting for complete history import"
-    output = Path(output_dir).resolve()
-    export_portal(settings.database_path, settings.database_path.parent / "portal_media",
-                  settings.allowed_chat_ids, output)
+def _deploy(settings: Settings, output: Path, *, project: str) -> str:
     digest = _digest(output)
     marker = settings.database_path.parent / "portal_publish_hash"
     if marker.exists() and marker.read_text() == digest:
@@ -58,6 +47,38 @@ def publish(settings: Settings, *, project: str = "rallyplans",
     previous_url_file.write_text(new_url)
     marker.write_text(digest)
     return "published"
+
+
+def publish(settings: Settings, *, project: str = "rallyplans",
+            output_dir: str | Path = "data/portal_build") -> str:
+    """Rebuild and deploy only when every archive import completed and content changed."""
+    if os.environ.get("RALLY_PORTAL_PUBLISH_APPROVED") != "1":
+        raise RuntimeError("External publication has not been enabled")
+    portal_store = PortalStore(settings.database_path)
+    if not settings.allowed_chat_ids or any(
+            portal_store.import_state(chat_id)["status"] != "complete"
+            for chat_id in settings.allowed_chat_ids):
+        return "waiting for complete history import"
+    output = Path(output_dir).resolve()
+    export_portal(settings.database_path, settings.database_path.parent / "portal_media",
+                  settings.allowed_chat_ids, output)
+    return _deploy(settings, output, project=project)
+
+
+def publish_live(settings: Settings, chat_id: str, *, project: str = "rallyplans",
+                 output_dir: str | Path = "data/portal_build") -> str:
+    """Generate one chat's live snapshot and deploy it without waiting on history import."""
+    if os.environ.get("RALLY_PORTAL_PUBLISH_APPROVED") != "1":
+        raise RuntimeError("External publication has not been enabled")
+    if chat_id not in settings.allowed_chat_ids:
+        raise PermissionError("Chat is not allowed")
+    from app.dashboard_live import sync_live_context
+    portal_store = PortalStore(settings.database_path)
+    sync_live_context(Store(settings.database_path), portal_store, chat_id)
+    output = Path(output_dir).resolve()
+    export_group(settings.database_path, settings.database_path.parent / "portal_media",
+                 chat_id, output)
+    return _deploy(settings, output, project=project)
 
 
 if __name__ == "__main__":

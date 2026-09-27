@@ -9,7 +9,8 @@ _SECTION = r"history|messages|media|photos|attachments|analytics|stats|plans|mem
 _ALIASES = {"messages": "history", "photos": "media", "attachments": "media", "stats": "analytics"}
 
 
-def portal_reply(message, portal_store, app_url: str, *, history_enabled: bool = True) -> str | None:
+def portal_reply(message, portal_store, app_url: str, *, history_enabled: bool = True,
+                 resolve_public_id=None) -> str | None:
     """Return a reply for an addressed portal command, or None for normal Rally work."""
     text = message.text.strip()
     if not re.search(r"\b(portal|page|site|history|messages|media|photos|attachments|analytics|stats|plans|members|activity)\b", text, re.I):
@@ -35,11 +36,13 @@ def portal_reply(message, portal_store, app_url: str, *, history_enabled: bool =
         theme = match.group(1).lower()
         portal_store.update_settings(chat_id, theme=theme)
         return f"Our page theme is now {theme}."
+    resolve = resolve_public_id or portal_store.ensure_group
     if re.search(r"\b(?:rotate|replace|reset)\s+(?:the\s+)?(?:portal|page|site)\s+link\b", text, re.I):
-        public_id = portal_store.rotate_group(chat_id)
+        portal_store.rotate_group(chat_id)
+        public_id = resolve(chat_id)
         return f"The old page link has been replaced. New link: {app_url.rstrip('/')}/{public_id}"
     if re.search(r"\b(?:link|url|send|open|see|share)\b", text, re.I) or re.search(
             r"\b(?:our|group)\s+(?:portal|page|site)\b", text, re.I):
-        public_id = portal_store.ensure_group(chat_id)
+        public_id = resolve(chat_id)
         return hosted_page_reply(f"{app_url.rstrip('/')}/{public_id}")
     return None

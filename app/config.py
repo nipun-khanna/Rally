@@ -311,10 +311,26 @@ def build_service(settings: Settings) -> RallyService:
             proposal_generator = CapabilityProposalGenerator(
                 draft_transport, CapabilityProposalStore(settings.database_path.parent /
                                                          'capability_proposals'))
+        from app.dashboard_live import generate_dashboard
+        from app.portal_store import PortalStore
+        portal_for_tools = PortalStore(settings.database_path)
+
+        def generate_dashboard_fn(chat_id: str) -> dict:
+            publisher = None
+            if settings.portal_publish_approved:
+                def publisher(target_chat):
+                    from scripts.publish_portal import publish_live
+                    return publish_live(settings, target_chat)
+            return generate_dashboard(
+                store, portal_for_tools, chat_id, app_url=settings.app_url,
+                allowed_chat_ids=settings.allowed_chat_ids, publisher=publisher)
+
         adaptive_handler = AdaptiveHandler(
             AdaptiveStore(settings.database_path), AdaptivePlanner(agent._call),
             build_default_registry(settings.allowed_chat_ids, plan_store=store,
-                                   web_answer_fn=web_answer_fn), proposal_generator)
+                                   web_answer_fn=web_answer_fn,
+                                   generate_dashboard_fn=generate_dashboard_fn),
+            proposal_generator)
 
     def react(chat_id: str, message_id: str, reaction: str):
         if not settings.bluebubbles_url or not settings.bluebubbles_password:

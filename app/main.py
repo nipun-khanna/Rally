@@ -62,6 +62,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
                voice_owner: str | None = None, browser_runtime=None,
                browser_inbound=None, browser_admin_token: str | None = None,
                browser_enabled: bool = False) -> FastAPI:
+    settings = None
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -114,7 +115,9 @@ def create_app(service=None, *, webhook_token: str | None = None,
                 settings.browser_owner_chat_id, settings.browser_owner_sender_id,
                 BrowserTaskService(browser_runtime, BrowserStore(settings.database_path),
                                    service.agent._call, settings),
-                service.send_fn)
+                service.send_fn,
+                allowed_chat_ids=settings.allowed_chat_ids,
+                group_turns=service.group_turns)
     else:
         publish_enabled = False
     tick_seconds = tick_seconds or 60
@@ -127,14 +130,33 @@ def create_app(service=None, *, webhook_token: str | None = None,
             portal_store.update_settings(chat_id, sections={"history": False, "media": False, "analytics": False})
     owner = voice_owner or 'local-imessage-account'
 
+    def resolve_public_id(chat_id):
+        from app.dashboard_live import generate_dashboard
+        publisher = None
+        if publish_enabled and settings is not None:
+            def publisher(target_chat):
+                from scripts.publish_portal import publish_live
+                try:
+                    return publish_live(settings, target_chat)
+                except Exception:
+                    logger.exception("Live dashboard publish failed")
+                    return "publish_failed"
+        result = generate_dashboard(
+            service.store, portal_store, chat_id, app_url=app_url,
+            allowed_chat_ids=allowed_chats, excluded_chat_ids=personal_chat_ids(),
+            publisher=publisher)
+        return result["public_id"]
+
     def command_reply(message):
         from app.group_admin_commands import admin_dashboard_reply
-        admin = admin_dashboard_reply(message, portal_store, app_url)
+        admin = admin_dashboard_reply(
+            message, portal_store, app_url, resolve_public_id=resolve_public_id)
         if admin is not None:
             return admin
         if not app_url:
             return None
-        return portal_reply(message, portal_store, app_url, history_enabled=history_enabled)
+        return portal_reply(message, portal_store, app_url, history_enabled=history_enabled,
+                            resolve_public_id=resolve_public_id)
 
     service.portal_handler = command_reply
 

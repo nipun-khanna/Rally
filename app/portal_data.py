@@ -28,6 +28,15 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
     plans = []
     for plan in service.store.plans_for_chat(chat_id):
         details = []
+        facts = plan.facts
+        if facts.location:
+            details.append(f"Near {facts.location}.")
+        if facts.preferred_cuisines:
+            details.append("Looking for " + ", ".join(facts.preferred_cuisines) + ".")
+        if facts.time:
+            details.append(f"At {facts.time}.")
+        if facts.party_size:
+            details.append(f"Party of {facts.party_size}.")
         proposal = service.store.latest_proposal(plan.id)
         if proposal:
             details.append(f"Proposed {proposal.venue_name} for {proposal.date} at {proposal.time} ({proposal.status}).")
