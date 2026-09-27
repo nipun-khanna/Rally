@@ -15,7 +15,7 @@ class _Portal:
 
 
 def test_add_rally_signature_preserves_mixed_case_public_id():
-    outbound = add_rally_signature(f"here's the damn group page: {DASHBOARD_URL}")
+    outbound = add_rally_signature(f"here's the group page: {DASHBOARD_URL}")
     assert DASHBOARD_URL in outbound
     assert PUBLIC_ID in outbound
     assert PUBLIC_ID.lower() not in outbound.replace(PUBLIC_ID, "")
@@ -23,9 +23,9 @@ def test_add_rally_signature_preserves_mixed_case_public_id():
 
 def test_add_rally_signature_keeps_url_case_in_the_middle_of_text():
     outbound = add_rally_signature(
-        f"here's the damn group page: {DASHBOARD_URL} the admin desk stays on the Mac.")
+        f"here's the group page: {DASHBOARD_URL} the admin desk stays on the Mac.")
     assert DASHBOARD_URL in outbound
-    assert outbound.startswith("Rally: here's the damn group page: ")
+    assert outbound.startswith("Rally: here's the group page: ")
     assert outbound.endswith("the admin desk stays on the mac.")
 
 
@@ -37,7 +37,7 @@ def test_dashboard_reply_keeps_mixed_case_url_after_signature():
     outbound = add_rally_signature(reply)
     assert DASHBOARD_URL in outbound
     assert PUBLIC_ID in outbound
-    assert any(word in outbound for word in ("damn", "shit", "fuck", "ass"))
+    assert "page" in outbound.lower()
 
 
 def test_add_rally_signature_still_lowercases_non_url_body():

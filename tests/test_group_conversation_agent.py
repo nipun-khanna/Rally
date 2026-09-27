@@ -143,15 +143,14 @@ def test_neutral_legal_discussion_is_not_a_local_refusal():
     assert "null message" not in system or "direct" in system
     assert "two short sentences" not in system
     assert "occasional profanity only" not in system
-    assert any(word in system for word in ("unhinged", "feral", "deranged"))
-    assert "deranged" in system and "friend" in system
-    assert "roast" in system
-    assert "profanity" in system or "swear" in system
+    assert "unhinged" in system
+    assert "friend" in system
+    assert "bully" in system or "do not insult" in system
     assert "take a side" in system or "take sides" in system
-    assert "dunk" in system or "roast the group" in system
     assert "always talk" in system or "must talk" in system or "always gets a" in system
-    assert "not a garnish" in system or "default register" in system or "not optional" in system
     assert "corporate" in system or "safety bot" in system
+    assert "feral" not in system
+    assert "deranged" not in system
 
 
 def test_conversation_prompt_direct_call_requires_a_useful_message():

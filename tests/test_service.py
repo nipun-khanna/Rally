@@ -59,7 +59,7 @@ class ServiceTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_direct_address_replies_once_in_same_chat_with_plan_context(self):
-        message = ChatMessage("direct-1", "chat1", "nick", "Hey Rally where should we eat?", NOW)
+        message = ChatMessage("direct-1", "chat1", "nick", "Hey Rally, what's the vibe?", NOW)
         self.assertTrue(self.service.receive(message))
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0][0], "chat1")
@@ -75,7 +75,7 @@ class ServiceTests(unittest.TestCase):
                                               f"Message {number}", NOW + timedelta(seconds=number)))
         self.store.add_message(ChatMessage("other-group", "chat2", "outsider", "Private", NOW))
         self.store.add_message(ChatMessage("bot-message", "chat1", "rally", "Bot", NOW, True))
-        message = ChatMessage("direct-window", "chat1", "nick", "Hey Rally, where should we eat?",
+        message = ChatMessage("direct-window", "chat1", "nick", "Hey Rally, what's the vibe?",
                               NOW + timedelta(seconds=26))
         self.service.receive(message)
         direct_messages = self.agent.direct_calls[-1][2]
@@ -106,7 +106,7 @@ class ServiceTests(unittest.TestCase):
             return "working on it"
 
         self.agent.answer_direct = slow_answer
-        message = ChatMessage("react-direct", "chat1", "nick", "Rally, where should we eat?", NOW)
+        message = ChatMessage("react-direct", "chat1", "nick", "Rally, what's the vibe?", NOW)
         self.assertTrue(self.service.receive(message))
         self.assertEqual(seen_before_reply[0], [("chat1", "react-direct", "👀")])
         self.assertEqual(reactions, [

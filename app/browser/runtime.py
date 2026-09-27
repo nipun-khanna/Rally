@@ -95,6 +95,15 @@ def audit_url_parts(url: str) -> tuple[str, str]:
     return parsed.hostname or "", parsed.path or "/"
 
 
+def _is_browser_death(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(token in text for token in (
+        "targetclosed", "target closed", "has been closed", "browser has been closed",
+        "crashed", "disconnected", "executable", "not installed", "econnreset",
+        "connection closed", "playwright",
+    ))
+
+
 class BrowserRuntime:
     def __init__(self, profile_path, downloads_path, proxy_url, max_text_chars,
                  driver=None, resolver=socket.getaddrinfo):
@@ -111,6 +120,7 @@ class BrowserRuntime:
         self._owner_page = None
         self._ephemeral = {}
         self._headed = False
+        self._installed: bool | None = None
 
     def status(self) -> dict:
         return {"running": self._running, "installed": self._is_installed(),
@@ -119,18 +129,25 @@ class BrowserRuntime:
     def _is_installed(self) -> bool:
         if self.driver is not None:
             return getattr(self.driver, "installed", True)
+        if self._installed is not None:
+            return self._installed
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
+            self._installed = False
             return False
+        if self._playwright is not None:
+            self._installed = bool(self._playwright.chromium.executable_path)
+            return self._installed
         try:
             playwright = sync_playwright().start()
             try:
-                return bool(playwright.chromium.executable_path)
+                self._installed = bool(playwright.chromium.executable_path)
             finally:
                 playwright.stop()
         except Exception:
-            return False
+            self._installed = False
+        return bool(self._installed)
 
     def start(self, headed: bool = False) -> dict:
         if self.driver is not None:
@@ -157,7 +174,22 @@ class BrowserRuntime:
             raise RuntimeError("Chromium is not installed") from exc
         self._headed = headed
         self._running = True
+        self._installed = True
         return self.status()
+
+    def recover(self) -> dict:
+        """Tear down a dead Playwright process and start a fresh one."""
+        headed = self._headed
+        try:
+            self.stop()
+        except Exception:
+            self._playwright = None
+            self._context = None
+            self._browser = None
+            self._owner_page = None
+            self._ephemeral = {}
+            self._running = False
+        return self.start(headed=headed)
 
     def stop(self) -> dict:
         if self.driver is not None:
@@ -181,17 +213,9 @@ class BrowserRuntime:
             self.start()
 
     def observe(self, *, chat_id: str, authenticated: bool) -> BrowserObservation:
-        self._ensure_started()
-        if self.driver is not None:
-            observed = self.driver.observe(chat_id, authenticated)
-        else:
-            observed = self._live_observe(chat_id, authenticated)
-        return BrowserObservation(
-            observed.url, observed.title,
-            bound_text(observed.text, self.max_text_chars), observed.controls)
+        return self._with_recovery(lambda: self._observe_once(chat_id, authenticated))
 
     def act(self, *, chat_id: str, authenticated: bool, action: dict) -> dict:
-        self._ensure_started()
         try:
             action = validate_action(action)
         except ValueError as exc:
@@ -204,10 +228,33 @@ class BrowserRuntime:
             name = action.get("name") or ""
             if Path(name).suffix and classify_download(name, 0) == "blocked":
                 return {"status": "blocked", "reason": "download type is not allowed"}
+        return self._with_recovery(lambda: self._act_once(chat_id, authenticated, action))
+
+    def _observe_once(self, chat_id: str, authenticated: bool) -> BrowserObservation:
+        self._ensure_started()
+        if self.driver is not None:
+            observed = self.driver.observe(chat_id, authenticated)
+        else:
+            observed = self._live_observe(chat_id, authenticated)
+        return BrowserObservation(
+            observed.url, observed.title,
+            bound_text(observed.text, self.max_text_chars), observed.controls)
+
+    def _act_once(self, chat_id: str, authenticated: bool, action: dict) -> dict:
+        self._ensure_started()
         if self.driver is not None:
             result = self.driver.act(chat_id, authenticated, action)
             return {key: value for key, value in result.items() if key != "cookies"}
         return self._live_act(chat_id, authenticated, action)
+
+    def _with_recovery(self, fn):
+        try:
+            return fn()
+        except Exception as exc:
+            if self.driver is not None or not _is_browser_death(exc):
+                raise
+            self.recover()
+            return fn()
 
     def _proxy_kwargs(self) -> dict:
         return {"proxy": {"server": self.proxy_url}} if self.proxy_url else {}
@@ -249,17 +296,32 @@ class BrowserRuntime:
         route.continue_()
 
     def _live_observe(self, chat_id: str, authenticated: bool) -> BrowserObservation:
-        page = self._live_page(chat_id, authenticated)
-        controls = []
-        for role in ("link", "button", "textbox"):
-            for locator in page.get_by_role(role).all()[:20]:
-                name = (locator.inner_text() or locator.get_attribute("aria-label") or "").strip()
-                if name:
-                    controls.append({"role": role, "name": name[:80]})
-        return BrowserObservation(
-            page.url or "", page.title() or "",
-            bound_text(page.inner_text("body") if page.url else "", self.max_text_chars),
-            tuple(controls))
+        try:
+            page = self._live_page(chat_id, authenticated)
+            controls = []
+            for role in ("link", "button", "textbox"):
+                for locator in page.get_by_role(role).all()[:20]:
+                    name = (locator.inner_text() or locator.get_attribute("aria-label") or "").strip()
+                    if name:
+                        controls.append({"role": role, "name": name[:80]})
+            url = page.url or ""
+            try:
+                body = page.inner_text("body") if url and url != "about:blank" else ""
+            except Exception:
+                body = ""
+            try:
+                title = page.title() or ""
+            except Exception:
+                title = ""
+            return BrowserObservation(url, title, bound_text(body, self.max_text_chars),
+                                      tuple(controls))
+        except Exception:
+            if authenticated:
+                self._owner_page = None
+                self._context = None
+            else:
+                self._ephemeral.pop(chat_id, None)
+            raise
 
     def _live_act(self, chat_id: str, authenticated: bool, action: dict) -> dict:
         page = self._live_page(chat_id, authenticated)
