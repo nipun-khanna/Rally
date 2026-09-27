@@ -15,12 +15,14 @@ from app.store import Store
 NOW = datetime(2026, 9, 26, 21, tzinfo=timezone.utc)
 HACK = "iMessage;+;hackgt13"
 LOCAL = "iMessage;+;localhost"
-_HEAT = ("fuck", "shit", "damn", "ass", "hell", "bitch")
+_MEAN = ("coward", "won't fake a damn restaurant", "locked-in chaos",
+         "stalling like cowards", "calling this shit mid")
 
 
-def _assert_unhinged(body: str):
+def _assert_not_mean(body: str):
     lowered = body.lower()
-    assert any(word in lowered for word in _HEAT), body
+    for phrase in _MEAN:
+        assert phrase not in lowered, body
     assert "couldn't finish" not in lowered
     assert "please try again later" not in lowered
 
@@ -95,9 +97,8 @@ def test_direct_call_related_followup_unrelated_and_expiry(tmp_path):
     assert (HACK, "u1", "like") not in reactions
     agent.followup_relevant = True
     assert service.receive(ChatMessage("u2", HACK, "maya", "same restaurant?", NOW + timedelta(minutes=3)))
-    assert len(sent) == before
+    assert sent[-1][1] == "yes, still ramen."
 
-    service.receive(ChatMessage("d2", HACK, "nick", "Hey Rally, where should we eat now?", NOW + timedelta(minutes=4)))
     stale = ChatMessage("s1", HACK, "sarah", "same restaurant?", NOW + timedelta(minutes=10))
     before = len(sent)
     service.receive(stale)
@@ -170,14 +171,14 @@ def test_rapid_repeat_coalesces(tmp_path):
     assert len(sent) == before
 
 
-def test_closed_turn_does_not_coalesce_a_new_direct_call(tmp_path):
+def test_idle_followup_does_not_close_the_turn(tmp_path):
     service, sent, reactions, agent = _service(tmp_path)
     service.receive(ChatMessage("a", HACK, "nick", "Rally, recap?", NOW))
     agent.followup_relevant = False
-    service.receive(ChatMessage("u", HACK, "maya", "did anyone see the game?", NOW + timedelta(seconds=2)))
+    service.receive(ChatMessage("u", HACK, "maya", "lol", NOW + timedelta(seconds=2)))
     before = len(sent)
     service.receive(ChatMessage("c", HACK, "nick", "Rally, recap?", NOW + timedelta(seconds=5)))
-    assert len(sent) == before + 1
+    assert len(sent) == before, "repeat recap in the coalesce window must stay one reply"
 
 
 def test_forget_does_not_delete_on_substring_match(tmp_path):
@@ -212,10 +213,9 @@ def test_recap_uses_known_plan_without_calling_the_model(tmp_path):
     assert service.receive(ChatMessage("d1", HACK, "nick", "Rally, recap dinner?", NOW))
     body = sent[-1][1]
     lowered = body.lower()
-    _assert_unhinged(body)
+    _assert_not_mean(body)
     assert "dinner" in lowered and "rambler" in lowered
     assert "chinese" in lowered and "japanese" in lowered
-    assert "fake" in lowered and "restaurant" in lowered
 
 
 def test_whats_the_plan_uses_known_plan_without_calling_the_model(tmp_path):
@@ -258,8 +258,8 @@ def test_pick_from_plan_uses_local_without_calling_the_model(tmp_path):
         "d1", HACK, "nick", "Rally, pick chinese or japanese", NOW))
     body = sent[-1][1].strip()
     lowered = body.lower()
-    _assert_unhinged(body)
-    assert lowered.startswith("chinese.") or lowered.startswith("japanese.")
+    _assert_not_mean(body)
+    assert lowered.startswith("chinese") or lowered.startswith("japanese")
     assert service._typing_events == []
 
 
@@ -329,13 +329,13 @@ def test_decision_timeout_uses_plan_backed_reply(tmp_path):
     assert service.receive(ChatMessage("d1", HACK, "nick", "Rally, recap dinner?", NOW))
     body = sent[-1][1]
     lowered = body.lower()
-    _assert_unhinged(body)
+    _assert_not_mean(body)
     assert "dinner" in lowered
     assert "rambler" in lowered
     assert "20:00" in lowered or "8" in lowered
 
 
-def test_non_recap_timeout_uses_local_plan_recap(tmp_path):
+def test_non_recap_timeout_names_a_restaurant(tmp_path):
     class Boom(ConversationAgent):
         def decide_conversation(self, *args, **kwargs):
             raise RuntimeError("timeout")
@@ -346,20 +346,23 @@ def test_non_recap_timeout_uses_local_plan_recap(tmp_path):
         location="Rambler Atlanta", preferred_cuisines=["chinese", "japanese"]), NOW)
     assert service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     body = sent[-1][1]
-    _assert_unhinged(body)
-    assert "dinner" in body.lower() and "rambler" in body.lower()
+    _assert_not_mean(body)
+    assert "rambler" in body.lower()
+    assert any(token in body.lower() for token in ("table", "green", "italian"))
+    assert "not a booking" in body.lower()
 
 
-def test_timeout_without_plan_is_still_unhinged(tmp_path):
+def test_timeout_without_plan_answers_without_a_recap_dump(tmp_path):
     class Boom(ConversationAgent):
         def decide_conversation(self, *args, **kwargs):
             raise RuntimeError("timeout")
 
     service, sent, _, _ = _service(tmp_path, agent=Boom())
-    assert service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
+    assert service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, what's the vibe?", NOW))
     body = sent[-1][1]
-    _assert_unhinged(body)
-    assert any(word in body.lower() for word in ("time", "place", "who"))
+    _assert_not_mean(body)
+    assert "here's the plan" not in body.lower()
+    assert any(word in body.lower() for word in ("recap", "restaurant", "here"))
 
 
 def test_fast_grok_is_used_instead_of_local_recap(tmp_path):
@@ -367,7 +370,7 @@ def test_fast_grok_is_used_instead_of_local_recap(tmp_path):
     service.store.save_plan(HACK, PlanFacts(
         activity="dinner", date="2026-09-27", location="Rambler Atlanta"), NOW)
     agent.message = "rambler. lock it. stop spinning."
-    assert service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
+    assert service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, what's the vibe tonight?", NOW))
     assert sent[-1][1] == "rambler. lock it. stop spinning."
     assert agent.calls
 
@@ -437,15 +440,12 @@ def test_decision_timeout_picks_named_cuisine_instead_of_restating(tmp_path):
         "d1", HACK, "nick", "Rally, pick chinese or japanese", NOW))
     body = sent[-1][1].strip()
     lowered = body.lower()
-    _assert_unhinged(body)
-    assert "won't fake a restaurant" not in lowered
-    assert lowered.startswith("chinese.") or lowered.startswith("japanese.")
-    winner = "chinese" if lowered.startswith("chinese.") else "japanese"
+    _assert_not_mean(body)
+    assert lowered.startswith("chinese") or lowered.startswith("japanese")
+    winner = "chinese" if lowered.startswith("chinese") else "japanese"
     loser = "japanese" if winner == "chinese" else "chinese"
-    why = body.split(".", 1)[1].strip()
-    assert why
     assert loser in lowered
-    assert winner in why.lower()
+    assert winner in lowered
     assert "\n" not in body
     assert not any(name in lowered for name in ("ramen house", "nobu", "din tai fung"))
 
@@ -476,7 +476,7 @@ def test_first_rally_call_reads_messages_from_before_it_was_invoked(tmp_path):
     assert service.store.is_processed("p2")
     fetched.clear()
     service.receive(ChatMessage("r2", HACK, "maya", "Rally, recap again", NOW + timedelta(seconds=30)))
-    assert fetched == []
+    assert fetched == [(HACK, 50)]
 
 
 def test_second_direct_call_does_not_wait_on_extract(tmp_path):
@@ -523,3 +523,29 @@ def test_completion_uses_the_chosen_tapback(tmp_path, kind):
     service, sent, reactions, _ = _service(tmp_path, agent=agent)
     service.receive(ChatMessage("r1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     assert reactions == [(HACK, "r1", "👀"), (HACK, "r1", kind)]
+
+
+def test_general_pings_answer_instead_of_repeating_recap(tmp_path):
+    class Boom(ConversationAgent):
+        def decide_conversation(self, *args, **kwargs):
+            raise RuntimeError("timeout")
+
+    service, sent, _, _ = _service(tmp_path, agent=Boom())
+    service.store.save_plan(HACK, PlanFacts(
+        activity="eat out", date="2026-09-26", preferred_cuisines=["indian"]), NOW)
+    assert service.receive(ChatMessage("r1", HACK, "nick", "Rally, recap?", NOW))
+    recap = sent[-1][1].lower()
+    assert "eat out" in recap and "indian" in recap
+    _assert_not_mean(sent[-1][1])
+    assert service.receive(ChatMessage(
+        "s1", HACK, "maya", "Rally name me 5 weekend songs", NOW + timedelta(seconds=20)))
+    assert "blinding lights" in sent[-1][1].lower()
+    assert "here's the plan" not in sent[-1][1].lower()
+    assert service.receive(ChatMessage(
+        "m1", HACK, "maya", "Rally why are u so mean", NOW + timedelta(seconds=40)))
+    assert "sorry" in sent[-1][1].lower()
+    assert service.receive(ChatMessage(
+        "a1", HACK, "maya", "Rally who made 4Raws", NOW + timedelta(seconds=70)))
+    assert "young nudy" in sent[-1][1].lower()
+    bodies = [body.lower() for _, body in sent]
+    assert bodies.count(recap) == 1

@@ -263,4 +263,6 @@ def test_direct_answer_prompt_matches_group_tone():
     assert 'recommend one' in prompt
     assert 'one missing decision' in prompt
     assert 'two short sentences' not in prompt
-    assert any(word in prompt for word in ('unhinged', 'feral', 'deranged'))
+    assert 'unhinged' in prompt
+    assert 'feral' not in prompt
+    assert 'deranged' not in prompt

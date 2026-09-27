@@ -11,6 +11,22 @@ from app.calendar import CalendarEvent, CalendarError
 from app.models import Proposal
 
 
+def test_dotenv_keeps_unquoted_semicolon_guid_and_repairs_truncated_shell_env(tmp_path, monkeypatch):
+    envfile = tmp_path / ".env"
+    envfile.write_text(
+        "RALLY_BROWSER_ENABLED=1\n"
+        "RALLY_BROWSER_OWNER_CHAT_ID=any;-;+15555550100\n"
+        "RALLY_BROWSER_OWNER_SENDER_ID=local-imessage-account\n"
+        "RALLY_BROWSER_ADMIN_TOKEN=W6SWqB8dA_5f5SUS2ms-CNu0WhxFLBL34ff2A7vfVBQ\n"
+    )
+    monkeypatch.delenv("RALLY_BROWSER_OWNER_CHAT_ID", raising=False)
+    settings = Settings.from_env(None, dotenv_path=envfile)
+    assert settings.browser_owner_chat_id == "any;-;+15555550100"
+    monkeypatch.setenv("RALLY_BROWSER_OWNER_CHAT_ID", "any")
+    repaired = Settings.from_env(None, dotenv_path=envfile)
+    assert repaired.browser_owner_chat_id == "any;-;+15555550100"
+
+
 def test_browser_defaults_off_and_requires_private_owner():
     settings = Settings.from_env({})
     assert settings.browser_enabled is False

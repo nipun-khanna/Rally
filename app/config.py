@@ -26,6 +26,7 @@ from app.adaptive.store import AdaptiveStore
 from app.adaptive.tools import build_default_registry
 from app.adaptive.generator import CapabilityDraft, CapabilityProposalGenerator
 from app.adaptive.proposals import CapabilityProposalStore
+from app.envfile import resolve_settings_env
 
 
 @dataclass(frozen=True)
@@ -80,8 +81,9 @@ class Settings:
     browser_max_text_chars: int = 6000
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
-        source = env if env is not None else os.environ
+    def from_env(cls, env: Mapping[str, str] | None = None, *,
+                 dotenv_path: Path | str | None = None) -> "Settings":
+        source = resolve_settings_env(env, dotenv_path=dotenv_path)
         stall_minutes = int(source.get("RALLY_STALL_MINUTES", "30"))
         tick_seconds = int(source.get("RALLY_TICK_SECONDS", "60"))
         max_requests = int(source.get("RALLY_MAX_PLACE_REQUESTS", "100"))

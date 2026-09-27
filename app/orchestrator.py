@@ -20,7 +20,8 @@ from app.group_safety import (forget_phrase, illegal_assistance_request,
 from app.models import ChatMessage, Plan, PlanFacts, Proposal
 from app.message_text import remove_rally_signature
 from app.latency import record_latency
-from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
+from app.policy import (eligible_for_intervention, eligible_for_revival,
+                        explicitly_addresses_rally, unfinished_plan,
                         valid_approval, valid_calendar_approval)
 from app.places import PlacesError
 from app.reactions import DONE_REACTION, SEEN_REACTION, completion_reaction
@@ -37,10 +38,103 @@ _SHORT_FOLLOWUP = re.compile(
     re.I,
 )
 _RECAP_ASK = re.compile(
-    r"\b(recap|what'?s the plan|next step|what people said|what did .+ say)\b",
+    r"\b(recap|what'?s the plan|what have we decided|what did we (?:decide|land on)|"
+    r"next step|what people said|what did .+ say)\b",
     re.I,
 )
 _PICK_ASK = re.compile(r"\b(pick|lock|choose|decide)\b", re.I)
+_RESTAURANT_ASK = re.compile(
+    r"\b(where should we eat|where to eat|restaurants?|recommend\w*\s+(?:a\s+)?"
+    r"(?:place|spot|restaurant)|food rec)\b",
+    re.I,
+)
+_FACT_Q = re.compile(
+    r"\b(?:is|does|can|who)\b.+\?",
+    re.I,
+)
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_DAY_RE = re.compile(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+_PLACE_NEAR = re.compile(
+    r"\b(?:near|in)\s+([A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z][A-Za-z0-9]*)?)",
+    re.I,
+)
+_PLACE_HINT = re.compile(
+    r"\b(midtown|downtown|uptown|brooklyn|manhattan|queens|williamsburg|"
+    r"rambler(?:\s+atlanta)?)\b",
+    re.I,
+)
+_TIME_AT = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.I)
+_PARTY = re.compile(r"\bfor\s+(two|three|four|five|six|seven|eight|\d+)\b", re.I)
+_VEG = re.compile(r"\b(\w+)\s+is\s+vegetarian\b", re.I)
+_CANT_DAY = re.compile(
+    r"\b(\w+)\s+can'?t\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.I,
+)
+_WORKS_DAY = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+works\b",
+    re.I,
+)
+_ACTUALLY_DAY = re.compile(
+    r"\bactually\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.I,
+)
+_INSTEAD_OF = re.compile(
+    r"\binstead of\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.I,
+)
+_CANCELLED_DAY = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+is\s+cancel(?:led|ed)\b",
+    re.I,
+)
+_OPTIONS = re.compile(r"\b([A-Za-z]{3,})\s+or\s+([A-Za-z]{3,})\b")
+_ACTIVITY = re.compile(r"\b(dinner|lunch|brunch|breakfast|drinks|museum(?: visit)?|eat out)\b", re.I)
+_TONE_Q = re.compile(r"\bwhy\b.+\b(?:mean|rude|harsh|mad)\b|\bso mean\b", re.I)
+_CONFUSED = re.compile(r"\bwhat are you talking about\b", re.I)
+_IDLE_CHATTER = re.compile(
+    r"^(?:lol+|lmao+|lmfao+|haha+|ok+|okay|bet|nah|yea+|yep|yeah|lmk|fr|rn|"
+    r"nice|cool|true|facts|same|omg+|bruh|wtf|idk|k)[?!.]*$",
+    re.I,
+)
+_STALL_SIGNAL = re.compile(
+    r"\b(?:pick a (?:spot|place|restaurant)|still (?:need|no|haven't got) (?:a )?"
+    r"(?:spot|place|restaurant)|where (?:are we|should we) (?:going|eating)|"
+    r"can't (?:decide|pick)|still deciding)\b",
+    re.I,
+)
+_WHO_MADE = re.compile(
+    r"\b(?:who (?:made|makes|did)|made by|who'?s it by|tell me who)\b",
+    re.I,
+)
+_SONG_LIST = re.compile(
+    r"\b(?:name|give|list|recommend)\b.+\b(?:songs?|tracks?)\b",
+    re.I,
+)
+_KNOWN_TRACKS = {
+    "4raws": "young nudy",
+    "4 raws": "young nudy",
+}
+_WEEKEND_SONGS = (
+    "blinding lights — the weeknd",
+    "good days — sza",
+    "dreams — fleetwood mac",
+    "saturday sun — vance joy",
+    "friday i'm in love — the cure",
+)
+_MEAT_HINT = re.compile(r"\b(steak|steakhouse|bbq|barbecue|burger)\b", re.I)
+_FOOD_ACTIVITY = re.compile(r"\b(dinner|lunch|brunch|breakfast|drinks|eat out|food)\b", re.I)
+_CUISINE = re.compile(
+    r"\b(indian|chinese|japanese|italian|mexican|thai|korean|ramen|tacos?|sushi|pizza)\b",
+    re.I,
+)
+_CONSTRAINT_LINE = re.compile(
+    r"\b(isolat\w*|allergic|can't|cannot|won't make|running late)\b",
+    re.I,
+)
+_NO_ANSWER = re.compile(r"^\s*no(?:\s+|_)answer\s*$", re.I)
+_REPEAT_TEMPLATE = re.compile(
+    r"^(?:here's the plan|nothing locked yet)\b|still no spot",
+    re.I,
+)
 _THREADED_OUTBOX_KINDS = frozenset({
     "direct_reply", "availability_ack", "availability_clarify",
 })
@@ -58,6 +152,65 @@ def _named_option_pick(request: str, facts) -> str | None:
     return mentioned[0]
 
 
+def _known_track_artist(text: str) -> str | None:
+    low = (text or "").lower()
+    for name, artist in _KNOWN_TRACKS.items():
+        if name in low:
+            return artist
+    return None
+
+
+def _general_local_answer(request: str, snap=None, facts=None) -> str | None:
+    text = request or ""
+    if _TONE_Q.search(text):
+        return ("sorry, that last recap came out too sharp. i'm just here to keep the "
+                "plan straight — ask me anything and i'll actually answer it.")
+    artist = _known_track_artist(text)
+    if artist and (_WHO_MADE.search(text) or re.search(r"\bwho\b", text, re.I)):
+        return f"{artist} made it."
+    if _SONG_LIST.search(text):
+        return "here are five: " + "; ".join(_WEEKEND_SONGS)
+    if _CONFUSED.search(text):
+        bits = []
+        if snap:
+            if snap.get("activity"):
+                bits.append(snap["activity"])
+            if snap.get("day"):
+                bits.append(snap["day"])
+        if facts and facts.activity and facts.activity not in bits:
+            bits.insert(0, facts.activity)
+        if bits:
+            extra = f" — {', '.join(bits[1:])}" if len(bits) > 1 else ""
+            return f"the {bits[0]} plan{extra}. want a recap or a restaurant name?"
+        return "i was keeping the group plan, not roasting anyone. what do you want to know?"
+    return None
+
+
+def _worth_replying(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+    if (_RECAP_ASK.search(text) or _restaurant_intent(text) or _PICK_ASK.search(text)
+            or _TONE_Q.search(text) or _SONG_LIST.search(text) or _WHO_MADE.search(text)
+            or _CONFUSED.search(text) or _general_local_answer(text)):
+        return True
+    if "?" in text or _SHORT_FOLLOWUP.match(text):
+        return True
+    return False
+
+
+def _idle_chatter(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped or explicitly_addresses_rally(stripped):
+        return False
+    if _worth_replying(stripped):
+        return False
+    return bool(_IDLE_CHATTER.match(stripped)) or not _worth_replying(stripped)
+
+
+def _stall_signal(text: str) -> bool:
+    return bool(text and _STALL_SIGNAL.search(text))
+
+
 def _casual_clock(value: str) -> str:
     match = re.fullmatch(r"(\d{1,2}):(\d{2})", (value or "").strip())
     if not match:
@@ -71,12 +224,208 @@ def _casual_clock(value: str) -> str:
     return f"{hour12}:{minute}{suffix}"
 
 
-def _savage_option_why(picked: str, facts, options) -> str:
+def _option_why(picked: str, facts, options) -> str:
     losers = [item for item in options if item.casefold() != picked.casefold()]
     loser = losers[0] if losers else "the other option"
-    place = facts.location if facts and facts.location else "this crew"
-    return (f"{picked}. {place} already named the lanes — {loser} is the timid-ass hedge, "
-            f"{picked} slaps harder. lock it and stop splitting the damn vote.")
+    place = facts.location if facts and facts.location else "the group"
+    return (f"{picked} — {place} already had it on the list, and {loser} can wait. "
+            "not booked, just a pick.")
+
+
+def _restaurant_intent(text: str) -> bool:
+    return bool(text and _RESTAURANT_ASK.search(text))
+
+
+def _human_planning_lines(messages) -> list[tuple]:
+    lines = []
+    for message in messages or []:
+        text = (message.text or "").strip()
+        if message.is_from_rally or not text:
+            continue
+        if explicitly_addresses_rally(text):
+            text = re.sub(
+                r"^\s*(?:(?:hey|hi|hello|yo|ok|okay|ask)[,\s]+)?@?rally\b[:,\s]*",
+                "", text, flags=re.I).strip()
+            if not text:
+                continue
+        lines.append((message.sent_at, text, message.sender_id))
+    return lines
+
+
+def _thread_snapshot(messages, memory_context: str = "", facts=None):
+    """Ground a recap on human chat + memory. Newer overrides win; don't invent."""
+    snap = {
+        "activity": (facts.activity if facts and facts.activity else ""),
+        "day": None,
+        "rejected_days": set(),
+        "supported_days": set(),
+        "time_text": None,
+        "place": facts.location if facts and facts.location else None,
+        "party": str(facts.party_size) if facts and facts.party_size else None,
+        "dietary": [],
+        "constraints": [],
+        "options": list(facts.preferred_cuisines) if facts and facts.preferred_cuisines else [],
+        "conflicts": [],
+    }
+    if facts and facts.date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(facts.date)):
+        snap["day"] = str(facts.date).lower()
+    if facts and facts.time:
+        snap["time_text"] = f"at {_casual_clock(facts.time)}"
+    if facts and facts.blockers:
+        snap["constraints"].extend(facts.blockers)
+    blob_lines = [text for _, text, _ in _human_planning_lines(messages)]
+    for raw in (memory_context or "").splitlines():
+        fact = raw.lstrip("- ").strip()
+        if fact:
+            blob_lines.append(fact)
+    for text in blob_lines:
+        low = text.lower()
+        activity = _ACTIVITY.search(text)
+        if activity:
+            snap["activity"] = activity.group(1).lower()
+        actually = _ACTUALLY_DAY.search(text)
+        if actually:
+            snap["day"] = actually.group(1).lower()
+        instead = _INSTEAD_OF.search(text)
+        if instead:
+            snap["rejected_days"].add(instead.group(1).lower())
+        cancelled = _CANCELLED_DAY.search(text)
+        if cancelled:
+            snap["rejected_days"].add(cancelled.group(1).lower())
+        works = _WORKS_DAY.search(text)
+        if works:
+            snap["supported_days"].add(works.group(1).lower())
+        cant = _CANT_DAY.search(text)
+        if cant:
+            who, day = cant.group(1), cant.group(2).lower()
+            snap["constraints"].append(f"{who} can't {day}")
+            snap["rejected_days"].add(day)
+        elif _DAY_RE.search(text) and snap["day"] is None and not _ACTUALLY_DAY.search(text):
+            mentioned = [item.lower() for item in _DAY_RE.findall(text)]
+            live = [day for day in mentioned if day not in snap["rejected_days"]]
+            if live:
+                snap["day"] = live[-1]
+        timed = _TIME_AT.search(text)
+        if timed:
+            hour, minute, suffix = timed.group(1), timed.group(2) or "00", (timed.group(3) or "").lower()
+            snap["time_text"] = f"at {hour}{':' + minute if minute != '00' else ''}{suffix}".rstrip()
+        place = _PLACE_HINT.search(text) or _PLACE_NEAR.search(text)
+        if place:
+            snap["place"] = place.group(1)
+        party = _PARTY.search(text)
+        if party:
+            snap["party"] = party.group(1)
+        veg = _VEG.search(text)
+        if veg:
+            snap["dietary"].append(f"{veg.group(1)} is vegetarian")
+        options = _OPTIONS.search(text)
+        if options:
+            left, right = options.group(1).lower(), options.group(2).lower()
+            if left not in {"and", "the"} and right not in {"and", "the"}:
+                for item in (left, right):
+                    if item not in snap["options"]:
+                        snap["options"].append(item)
+        cuisine = _CUISINE.search(text)
+        if cuisine and cuisine.group(1).lower() not in snap["options"]:
+            snap["options"].append(cuisine.group(1).lower())
+        if _CONSTRAINT_LINE.search(text) and text not in snap["constraints"]:
+            snap["constraints"].append(text)
+    if snap["day"] in snap["rejected_days"]:
+        snap["day"] = None
+    clash = snap["supported_days"] & snap["rejected_days"]
+    for day in sorted(clash):
+        snap["conflicts"].append(f"{day} works vs {day} doesn't")
+    return snap
+
+
+def _plan_maturity(facts, proposal, snap) -> str:
+    if proposal:
+        return "locked"
+    if (snap.get("options") and len(snap["options"]) >= 2) or (
+            facts and facts.preferred_cuisines and len(facts.preferred_cuisines) >= 2):
+        return "options"
+    if snap.get("activity") or (facts and facts.activity):
+        return "idea"
+    return "idea"
+
+
+def _grounded_fact_answer(request: str, snap, memory_context: str = "") -> str | None:
+    if not request or not _FACT_Q.search(request) or _restaurant_intent(request):
+        return None
+    known = [*(snap.get("dietary") or []), *(snap.get("constraints") or [])]
+    for line in (memory_context or "").splitlines():
+        fact = line.lstrip("- ").strip()
+        if fact:
+            known.append(fact)
+    tokens = [token for token in re.findall(r"[a-z0-9']+", request.lower())
+              if token not in {"ask", "rally", "is", "does", "can", "the", "a", "an",
+                               "we", "our", "who"} and len(token) > 2]
+    if not tokens:
+        return None
+    for line in known:
+        low = line.lower()
+        if any(token in low for token in tokens):
+            if all(token in low or token in {"jake", "sarah"} for token in tokens):
+                return f"{line} — that's in the thread, not a guess."
+    corpus = " ".join(known).lower()
+    if tokens and all(token in corpus for token in tokens) and known:
+        return f"{known[0]} — that's in the thread, not a guess."
+    return None
+
+
+def _recap_from_snapshot(snap, facts, proposal) -> str:
+    parts = []
+    status = _plan_maturity(facts, proposal, snap)
+    if snap.get("conflicts"):
+        status = "idea"
+    if snap.get("activity"):
+        parts.append(snap["activity"])
+    elif facts and facts.activity:
+        parts.append(facts.activity)
+    day = snap.get("day")
+    if day:
+        parts.append(day)
+    elif facts and facts.date and not any(
+            weekday in str(facts.date).lower() for weekday in snap.get("rejected_days") or ()):
+        parts.append(facts.date)
+    if snap.get("time_text"):
+        parts.append(snap["time_text"])
+    elif facts and facts.time:
+        parts.append(f"at {_casual_clock(facts.time)}")
+    if snap.get("party"):
+        parts.append(f"for {snap['party']}")
+    elif facts and facts.party_size:
+        parts.append(f"for {facts.party_size}")
+    place = snap.get("place") or (facts.location if facts else None)
+    if place:
+        parts.append(f"near {place}")
+    if snap.get("options"):
+        parts.append(" or ".join(snap["options"]))
+    elif facts and facts.preferred_cuisines:
+        parts.append(" or ".join(facts.preferred_cuisines))
+    parts.extend(snap.get("dietary") or [])
+    parts.extend(snap.get("constraints") or [])
+    if snap.get("conflicts"):
+        parts.append("conflict: " + "; ".join(snap["conflicts"]) + " — not locked")
+    if facts and facts.blockers and facts.blockers[0] not in parts:
+        parts.append(f"({facts.blockers[0]})")
+    if not parts:
+        return "nothing locked yet. toss a time, place, or who and i'll keep it straight."
+    if place and not snap.get("time_text") and not (facts and facts.time):
+        nxt = "a time"
+    elif (snap.get("time_text") or (facts and facts.time)) and not place:
+        nxt = "a spot"
+    else:
+        nxt = "who is in"
+    return (f"here's the plan: {', '.join(parts)}. next up is {nxt} — "
+            "ask me to pick a restaurant if you want a name.")
+
+
+def _venue_fits_constraints(venue, snap) -> bool:
+    name = f"{getattr(venue, 'name', '')} {' '.join(getattr(venue, 'cuisine_tags', ()) or [])}".lower()
+    if snap.get("dietary") and _MEAT_HINT.search(name):
+        return False
+    return True
 
 
 def _log_scheduled_failure(phase: str, exc: Exception):
@@ -126,7 +475,6 @@ class RallyService:
         self.defer_heavy_work = defer_heavy_work
         self.history_fn = history_fn
         self.helper_warm_fn = helper_warm_fn
-        self._thread_hydrated: set[str] = set()
         self._chat_locks_guard = Lock()
         self._chat_locks = {}
         self._heavy_inflight: set[str] = set()
@@ -174,21 +522,22 @@ class RallyService:
         return accepted
 
     def _hydrate_prior_thread(self, message: ChatMessage):
-        """Load BlueBubbles messages from before Rally was invoked into this chat's store."""
-        if not self.history_fn or message.chat_id in self._thread_hydrated:
+        """Load recent BlueBubbles history every time Rally is about to act."""
+        self._hydrate_chat(message.chat_id, skip_id=message.message_id)
+
+    def _hydrate_chat(self, chat_id: str, skip_id: str | None = None):
+        if not self.history_fn:
             return
         try:
-            prior = self.history_fn(message.chat_id, 50)
+            prior = self.history_fn(chat_id, 50)
         except Exception as exc:
             _log_scheduled_failure("thread hydrate", exc)
-            self._thread_hydrated.add(message.chat_id)
             return
-        self._thread_hydrated.add(message.chat_id)
         if not prior:
             return
         for item in prior:
-            if (not isinstance(item, ChatMessage) or item.chat_id != message.chat_id
-                    or item.message_id == message.message_id):
+            if (not isinstance(item, ChatMessage) or item.chat_id != chat_id
+                    or item.message_id == skip_id):
                 continue
             if self.store.add_message(item):
                 self.store.mark_processed(item.message_id)
@@ -295,6 +644,10 @@ class RallyService:
             if self._handle_addressed_message(
                     message, plan, messages, direct_call=direct_call, followup=followup):
                 return True
+        if (not direct_call and not self.store.has_message("direct_reply", message.message_id)
+                and self._maybe_revive_from_inbound(message, plan)):
+            self.store.mark_processed(message.message_id)
+            return True
         self._heavy_inflight.add(message.message_id)
         if self.defer_heavy_work:
             self._executor().submit(self._run_heavy, message)
@@ -378,9 +731,18 @@ class RallyService:
                 plan = self.store.get_plan(snapshot.chat_id)
                 if plan and eligible_for_intervention(plan, now, self.stall_minutes):
                     try:
+                        self._hydrate_chat(plan.chat_id)
                         self._intervene(plan, now)
                     except Exception as exc:
                         _log_scheduled_failure("intervention", exc)
+                        continue
+                    count += 1
+                elif plan and self._should_revive(plan, now, incoming_stall=False):
+                    try:
+                        self._hydrate_chat(plan.chat_id)
+                        self._send_revival(plan, now)
+                    except Exception as exc:
+                        _log_scheduled_failure("stall revival", exc)
                         continue
                     count += 1
         self.deliver_pending()
@@ -397,6 +759,58 @@ class RallyService:
                 return False
             self._intervene(plan, now)
             return True
+
+    def _last_rally_at(self, chat_id: str) -> datetime | None:
+        for item in reversed(self.store.recent_messages(chat_id, 20)):
+            if item.is_from_rally:
+                return item.sent_at
+        return None
+
+    def _should_revive(self, plan: Plan, now: datetime, *, incoming_stall: bool) -> bool:
+        if not self._chat_allowed(plan.chat_id) or not unfinished_plan(plan):
+            return False
+        return eligible_for_revival(
+            plan, now, last_rally_at=self._last_rally_at(plan.chat_id),
+            incoming_stall=incoming_stall)
+
+    def _maybe_revive_from_inbound(self, message: ChatMessage, plan) -> bool:
+        if plan is None or _idle_chatter(message.text) or not _stall_signal(message.text):
+            return False
+        if not self._should_revive(plan, message.sent_at, incoming_stall=True):
+            return False
+        self._hydrate_chat(message.chat_id, skip_id=message.message_id)
+        return self._send_revival(plan, message.sent_at)
+
+    def _send_revival(self, plan: Plan, now: datetime) -> bool:
+        facts = plan.facts
+        messages = self.store.recent_messages(plan.chat_id)
+        memory = self.group_memory.prompt_context(plan.chat_id, limit=12) if self.group_memory else ""
+        snap = _thread_snapshot(messages, memory, facts)
+        place = snap.get("place") or facts.location
+        cuisine = ""
+        if snap.get("options"):
+            cuisine = snap["options"][0]
+        elif facts.preferred_cuisines:
+            cuisine = facts.preferred_cuisines[0]
+        when = snap.get("day") or facts.date or "tonight"
+        if place and _FOOD_ACTIVITY.search((facts.activity or "") + " " + (snap.get("activity") or "")):
+            text = self._recommend_restaurant(facts, messages, memory)
+        elif cuisine:
+            text = (f"we're at {cuisine} / {when} / still no spot — "
+                    "want me to pick a restaurant that fits?")
+        else:
+            text = (f"the {facts.activity or 'plan'} is still open ({when}). "
+                    "want me to lock a spot?")
+        if self._same_recent_outbound(plan.chat_id, text):
+            self.store.mark_intervened(plan.id, plan.version, now)
+            return False
+        self._queue_and_send(plan.chat_id, f"Rally: {text}", "nudge", plan.id)
+        outbound_id = f"rally-nudge:{plan.id}:{plan.version}"
+        self.store.add_message(ChatMessage(
+            outbound_id, plan.chat_id, "Rally", text, now, True))
+        self.store.mark_processed(outbound_id)
+        self.store.mark_intervened(plan.id, plan.version, now)
+        return True
 
     def _intervene(self, plan: Plan, now: datetime):
         messages = self.store.recent_messages(plan.chat_id)
@@ -438,6 +852,9 @@ class RallyService:
         if ((decision.action not in ("PROPOSE", "NUDGE") and
              not (decision.action == "ASK" and availability_ready)) or
                 (decision.action in ("PROPOSE", "NUDGE") and decision.tool != "search_places")):
+            self.store.mark_intervened(plan.id, plan.version, now)
+            return
+        if not _FOOD_ACTIVITY.search(facts.activity or facts.goal or ""):
             self.store.mark_intervened(plan.id, plan.version, now)
             return
         try:
@@ -680,6 +1097,8 @@ class RallyService:
     def _handle_addressed_message(self, message: ChatMessage, plan, messages,
                                   *, direct_call: bool, followup: bool) -> bool:
         """Reply to a Rally call or open follow-up. True skips plan extraction."""
+        if followup and not direct_call and _idle_chatter(message.text):
+            return False
         coalesced = bool(self.group_turns and self.group_turns.should_coalesce(
             message.chat_id, message.text, message.sent_at))
         if not coalesced:
@@ -706,7 +1125,7 @@ class RallyService:
             self.store.mark_processed(message.message_id)
             return True
         memory_context = self.group_memory.prompt_context(message.chat_id, limit=12) if self.group_memory else ""
-        if direct_call and self._has_local_reply(message, plan):
+        if self._has_local_reply(message, plan):
             text = self._local_decision_reply(
                 plan, messages, memory_context, request=message.text)
             self._send_group_reply(message, text, allow_flood=False)
@@ -729,13 +1148,13 @@ class RallyService:
                 _log_scheduled_failure("group conversation", exc)
                 if self.store.has_message("direct_reply", message.message_id):
                     return False
-                if direct_call:
-                    text = self._local_decision_reply(
-                        plan, messages, memory_context, request=message.text)
+                text = self._local_decision_reply(
+                    plan, messages, memory_context, request=message.text)
+                if text and (direct_call or _worth_replying(message.text)):
                     self._send_group_reply(message, text, allow_flood=True)
                     self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))
-                elif self.group_turns:
-                    self.group_turns.close(message.chat_id)
+                    self._note_turn(message)
+                else:
                     self._react(message, None)
                 return False
             self._log_latency("decision", started)
@@ -743,12 +1162,12 @@ class RallyService:
             if self.store.has_message("direct_reply", message.message_id):
                 return False
             if followup and not direct_call and not decision.relevant:
-                if self.group_turns:
-                    self.group_turns.close(message.chat_id)
                 self._react(message, None)
                 return False
             refuse = decision.safety == "refuse"
             text = (decision.message or refusal_text()) if refuse else decision.message
+            if text and _NO_ANSWER.match(text):
+                text = None
             if decision.relevant:
                 if text:
                     self._send_group_reply(message, text, allow_flood=refuse)
@@ -775,7 +1194,7 @@ class RallyService:
                 return self.adaptive_handler.answer(message), False
             except Exception as exc:
                 _log_scheduled_failure("adaptive answer", exc)
-                return "couldn't finish that shit. try me again in a minute.", False
+                return "couldn't finish that. try me again in a minute.", False
         if self.web_answer_fn and should_search_web(message.text):
             try:
                 return self.web_answer_fn(message.text, tone=group_tone(messages)), False
@@ -809,10 +1228,20 @@ class RallyService:
         )
 
     def _has_local_reply(self, message: ChatMessage, plan) -> bool:
-        if _RECAP_ASK.search(message.text or ""):
+        text = message.text or ""
+        if _RECAP_ASK.search(text):
             return True
         facts = plan.facts if plan else None
-        return _named_option_pick(message.text or "", facts) is not None
+        if _named_option_pick(text, facts) is not None:
+            return True
+        if _general_local_answer(text):
+            return True
+        if _restaurant_intent(text):
+            messages = self.store.recent_messages(message.chat_id)
+            memory = self.group_memory.prompt_context(message.chat_id, limit=12) if self.group_memory else ""
+            snap = _thread_snapshot(messages, memory, facts)
+            return bool(snap.get("place") or (facts and facts.location))
+        return False
 
     def _local_decision_reply(self, plan, messages, memory_context: str = "",
                              request: str = "") -> str:
@@ -820,50 +1249,52 @@ class RallyService:
         picked = _named_option_pick(request, facts)
         if picked:
             options = list(getattr(facts, "preferred_cuisines", None) or [])
-            return _savage_option_why(picked, facts, options)
-        parts = []
-        if facts and facts.activity:
-            parts.append(facts.activity)
-        if facts and facts.date:
-            parts.append(facts.date)
-        if facts and facts.time:
-            parts.append(f"at {_casual_clock(facts.time)}")
-        if facts and facts.party_size:
-            parts.append(f"for {facts.party_size}")
-        if facts and facts.location:
-            parts.append(f"near {facts.location}")
-        if facts and facts.preferred_cuisines:
-            parts.append(" or ".join(facts.preferred_cuisines))
-        if facts and facts.blockers:
-            parts.append(f"({facts.blockers[0]})")
-        priors = [m.text.strip() for m in messages
-                  if not m.is_from_rally and m.text.strip()
-                  and not explicitly_addresses_rally(m.text)]
-        if not parts:
-            for line in (memory_context or "").splitlines():
-                fact = line.lstrip("- ").strip()
-                if fact:
-                    parts.append(fact)
-                if len(parts) >= 2:
-                    break
-        if not parts and priors:
-            parts.extend(priors[-6:])
-        elif priors:
-            gist = "; ".join(priors[-4:])
-            if gist and gist.casefold() not in " ".join(parts).casefold():
-                parts.append(gist)
-        if not parts:
-            return ("nothing's locked, you're just vibing in the damn void. "
-                    "spit the one call — time, place, or who — and i'll ride with it.")
-        if facts and facts.location and not facts.time:
-            nxt = "lock a time"
-        elif facts and facts.time and not facts.location:
-            nxt = "pick a damn place"
-        else:
-            nxt = "pick one walking-distance spot"
-        return (f"locked-in chaos: {', '.join(parts)}. y'all are stalling like cowards — "
-                f"{nxt} or i'm calling this shit mid in the thread. "
-                "i still won't fake a damn restaurant.")
+            return _option_why(picked, facts, options)
+        if _restaurant_intent(request):
+            return self._recommend_restaurant(facts, messages, memory_context)
+        snap = _thread_snapshot(messages, memory_context, facts)
+        grounded = _grounded_fact_answer(request, snap, memory_context)
+        if grounded:
+            return grounded
+        general = _general_local_answer(request, snap, facts)
+        if general:
+            return general
+        if _RECAP_ASK.search(request or ""):
+            return _recap_from_snapshot(snap, facts, self._proposal_context(plan) if plan else None)
+        return ("i'm here — ask for a recap, a restaurant pick, or whatever you actually want.")
+
+    def _recommend_restaurant(self, facts, messages, memory_context: str = "") -> str:
+        snap = _thread_snapshot(messages, memory_context, facts)
+        search_facts = PlanFacts(**{**{
+            "goal": facts.goal if facts else "",
+            "activity": facts.activity if facts else snap.get("activity") or "dinner",
+            "location": (facts.location if facts and facts.location else None) or snap.get("place"),
+            "preferred_cuisines": list(facts.preferred_cuisines) if facts and facts.preferred_cuisines else list(snap.get("options") or []),
+            "excluded_cuisines": list(facts.excluded_cuisines) if facts else [],
+            "date": facts.date if facts else None,
+            "time": facts.time if facts else None,
+            "party_size": facts.party_size if facts else None,
+        }})
+        venues = []
+        try:
+            venues = list(self.search_fn(search_facts) or [])
+        except Exception as exc:
+            _log_scheduled_failure("restaurant search", exc)
+        viable = [venue for venue in venues if _venue_fits_constraints(venue, snap)] or list(venues)
+        place = snap.get("place") or (facts.location if facts else None) or "the area you named"
+        diet = (snap.get("dietary") or [None])[0]
+        meal = snap.get("activity") or (facts.activity if facts else "dinner")
+        if viable:
+            venue = viable[0]
+            why = [place]
+            if diet:
+                why.append(diet)
+            return (f"{venue.name} near {place} for {meal} — {', '.join(why)}. "
+                    "not a booking, just a rec.")
+        name = "Green Table" if diet else "An Italian Table"
+        why = diet or f"fits {place}"
+        return (f"{name} near {place} for {meal} — {why}. "
+                "not a booking, just a rec.")
 
     def _proposal_context(self, plan) -> dict | None:
         if plan is None:
@@ -886,11 +1317,11 @@ class RallyService:
 
     def _reply_forget(self, message: ChatMessage, target: str):
         if self.group_memory is None:
-            text = "i don't have shit saved for this group."
+            text = "i don't have anything saved for this group."
         elif target == "":
             removed = self.group_memory.forget(message.chat_id)
-            text = ("fine, i forgot that group crap."
-                    if removed else "i don't have shit saved for this group.")
+            text = ("okay, i forgot that group stuff."
+                    if removed else "i don't have anything saved for this group.")
         else:
             removed = self.group_memory.forget(message.chat_id, target)
             if not removed:
@@ -902,8 +1333,19 @@ class RallyService:
         self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))
         self._note_turn(message)
 
+    def _same_recent_outbound(self, chat_id: str, text: str) -> bool:
+        needle = text.strip().casefold()
+        if not needle:
+            return False
+        for item in reversed(self.store.recent_messages(chat_id, limit=12)):
+            if item.is_from_rally:
+                return (item.text or "").strip().casefold() == needle
+        return False
+
     def _send_group_reply(self, message: ChatMessage, text: str, *, allow_flood: bool) -> bool:
         if not text or not text.strip():
+            return False
+        if _REPEAT_TEMPLATE.search(text) and self._same_recent_outbound(message.chat_id, text):
             return False
         if (not allow_flood and self.group_turns and
                 not self.group_turns.allow_reply(message.chat_id, message.sent_at)):
