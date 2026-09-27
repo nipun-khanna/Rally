@@ -8,6 +8,7 @@ from typing import Mapping
 
 from app.agent import GrokClient
 from app.bluebubbles import is_private_direct_chat, send_message
+from app.history import BlueBubblesHistoryClient, planning_message_from_archive
 from app.group_memory import GroupMemoryStore
 from app.group_turns import GroupTurnStore
 from app.message_text import add_rally_signature
@@ -313,6 +314,20 @@ def build_service(settings: Settings) -> RallyService:
         return set_typing(settings.bluebubbles_url, settings.bluebubbles_password, chat_id, on,
                           wait_for_helper=False)
 
+    history_fn = None
+    if settings.history_enabled and settings.bluebubbles_url and settings.bluebubbles_password:
+        history_client = BlueBubblesHistoryClient(settings.bluebubbles_url,
+                                                  settings.bluebubbles_password)
+
+        def history_fn(chat_id: str, limit: int = 50):
+            items = history_client.fetch_recent_messages(chat_id, limit=limit)
+            messages = []
+            for item in items:
+                parsed = planning_message_from_archive(item, chat_id)
+                if parsed is not None:
+                    messages.append(parsed)
+            return messages
+
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
                         reply_agent=reply_agent,
@@ -321,4 +336,5 @@ def build_service(settings: Settings) -> RallyService:
                         availability_fn=availability_fn, time_zone=settings.time_zone,
                         group_memory=GroupMemoryStore(settings.database_path),
                         group_turns=GroupTurnStore(settings.database_path),
-                        react_fn=react, typing_fn=typing, defer_heavy_work=True)
+                        react_fn=react, typing_fn=typing, defer_heavy_work=True,
+                        history_fn=history_fn)

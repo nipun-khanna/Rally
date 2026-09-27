@@ -194,7 +194,7 @@ class GrokClient:
                  "sent_at_local": m.sent_at.astimezone(self.time_zone).isoformat()}
                 for m in messages if not m.is_from_rally]
 
-    def _conversation_messages(self, messages: list[ChatMessage], *, limit: int = 12) -> list[dict]:
+    def _conversation_messages(self, messages: list[ChatMessage], *, limit: int = 40) -> list[dict]:
         """Compact thread for replies: humans plus Rally, no local timestamps."""
         return [{"id": m.message_id,
                  "sender_id": "Rally" if m.is_from_rally else m.sender_id,

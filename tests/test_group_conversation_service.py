@@ -450,6 +450,35 @@ def test_decision_timeout_picks_named_cuisine_instead_of_restating(tmp_path):
     assert not any(name in lowered for name in ("ramen house", "nobu", "din tai fung"))
 
 
+def test_first_rally_call_reads_messages_from_before_it_was_invoked(tmp_path):
+    prior = [
+        ChatMessage("p1", HACK, "nick", "chinese near rambler tomorrow 8pm for 2",
+                    NOW - timedelta(hours=1)),
+        ChatMessage("p2", HACK, "sarah", "akshit is isolating", NOW - timedelta(minutes=20)),
+    ]
+    fetched = []
+
+    def history(chat_id, limit=50):
+        fetched.append((chat_id, limit))
+        return prior
+
+    service, sent, _, _ = _service(tmp_path)
+    service.history_fn = history
+    assert service.receive(ChatMessage("r1", HACK, "maya", "Rally, recap what people said", NOW))
+    assert fetched == [(HACK, 50)]
+    body = sent[-1][1].lower()
+    assert "rambler" in body
+    assert "chinese" in body
+    assert "akshit" in body
+    ids = {item.message_id for item in service.store.recent_messages(HACK, limit=20)}
+    assert {"p1", "p2", "r1"} <= ids
+    assert service.store.is_processed("p1")
+    assert service.store.is_processed("p2")
+    fetched.clear()
+    service.receive(ChatMessage("r2", HACK, "maya", "Rally, recap again", NOW + timedelta(seconds=30)))
+    assert fetched == []
+
+
 def test_second_direct_call_does_not_wait_on_extract(tmp_path):
     started = threading.Event()
     release = threading.Event()

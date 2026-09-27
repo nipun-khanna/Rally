@@ -101,7 +101,7 @@ class RallyService:
                  portal_handler=None, web_answer_fn=None, adaptive_handler=None,
                  availability_fn=None, time_zone: str = "America/New_York", reply_agent=None,
                  group_memory=None, group_turns=None, react_fn=None, typing_fn=None,
-                 defer_heavy_work: bool = False):
+                 defer_heavy_work: bool = False, history_fn=None):
         self.store = store
         self.agent = agent
         self.reply_agent = reply_agent or agent
@@ -121,6 +121,8 @@ class RallyService:
         self.react_fn = react_fn
         self.typing_fn = typing_fn
         self.defer_heavy_work = defer_heavy_work
+        self.history_fn = history_fn
+        self._thread_hydrated: set[str] = set()
         self._chat_locks_guard = Lock()
         self._chat_locks = {}
         self._heavy_inflight: set[str] = set()
@@ -167,6 +169,26 @@ class RallyService:
         self._log_latency("receive", started)
         return accepted
 
+    def _hydrate_prior_thread(self, message: ChatMessage):
+        """Load BlueBubbles messages from before Rally was invoked into this chat's store."""
+        if not self.history_fn or message.chat_id in self._thread_hydrated:
+            return
+        try:
+            prior = self.history_fn(message.chat_id, 50)
+        except Exception as exc:
+            _log_scheduled_failure("thread hydrate", exc)
+            self._thread_hydrated.add(message.chat_id)
+            return
+        self._thread_hydrated.add(message.chat_id)
+        if not prior:
+            return
+        for item in prior:
+            if (not isinstance(item, ChatMessage) or item.chat_id != message.chat_id
+                    or item.message_id == message.message_id):
+                continue
+            if self.store.add_message(item):
+                self.store.mark_processed(item.message_id)
+
     def recover_pending(self, chat_id: str, *, limit: int = 75) -> int:
         """Re-extract a bounded pending window without replaying replies or actions."""
         with self._chat_lock(chat_id):
@@ -196,6 +218,7 @@ class RallyService:
             return False
         if message.message_id in self._heavy_inflight:
             return True
+        self._hydrate_prior_thread(message)
         plan = self.store.get_plan(message.chat_id)
         if (plan and plan.state not in ("READY", "EXECUTING", "DONE", "ABANDONED") and plan.facts.date and
                 self.store.availability_requested(plan.id, plan.version) and
@@ -808,6 +831,9 @@ class RallyService:
             parts.append(" or ".join(facts.preferred_cuisines))
         if facts and facts.blockers:
             parts.append(f"({facts.blockers[0]})")
+        priors = [m.text.strip() for m in messages
+                  if not m.is_from_rally and m.text.strip()
+                  and not explicitly_addresses_rally(m.text)]
         if not parts:
             for line in (memory_context or "").splitlines():
                 fact = line.lstrip("- ").strip()
@@ -815,6 +841,12 @@ class RallyService:
                     parts.append(fact)
                 if len(parts) >= 2:
                     break
+        if not parts and priors:
+            parts.extend(priors[-6:])
+        elif priors:
+            gist = "; ".join(priors[-4:])
+            if gist and gist.casefold() not in " ".join(parts).casefold():
+                parts.append(gist)
         if not parts:
             return ("nothing's locked, you're just vibing in the damn void. "
                     "spit the one call — time, place, or who — and i'll ride with it.")
