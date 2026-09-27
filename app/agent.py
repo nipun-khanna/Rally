@@ -87,11 +87,19 @@ def _relative_date(text: str, sent_at: date) -> date | None:
 class GrokClient:
     def __init__(self, api_key: str, model: str = "grok-4.7", transport: Callable | None = None,
                  default_city: str = "", time_zone: str = "America/New_York",
-                 extraction_timeout: float = 60, extraction_reasoning_effort: str = "low"):
+                 extraction_timeout: float = 60, extraction_reasoning_effort: str = "low",
+                 direct_reasoning_effort: str | None = None, direct_timeout: float = 25):
         if not 1 <= extraction_timeout <= 120:
             raise ValueError("Extraction timeout must be between 1 and 120 seconds")
         if extraction_reasoning_effort not in ("low", "medium", "high"):
             raise ValueError("Invalid extraction reasoning effort")
+        supported_direct = ("none", "low", "medium", "high") if model == "grok-4.3" else ("low", "medium", "high")
+        if direct_reasoning_effort is not None and (
+                model not in ("grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7")
+                or direct_reasoning_effort not in supported_direct):
+            raise ValueError("Invalid direct reply reasoning effort for model")
+        if not 1 <= direct_timeout <= 120:
+            raise ValueError("Direct reply timeout must be between 1 and 120 seconds")
         self.api_key = api_key
         self.model = model
         self.transport = transport
@@ -99,6 +107,8 @@ class GrokClient:
         self.time_zone = ZoneInfo(time_zone)
         self.extraction_timeout = extraction_timeout
         self.extraction_reasoning_effort = extraction_reasoning_effort
+        self.direct_reasoning_effort = direct_reasoning_effort
+        self.direct_timeout = direct_timeout
 
     def _call(self, schema: type[BaseModel], prompt: str, data: dict) -> dict:
         payload = {
@@ -114,12 +124,15 @@ class GrokClient:
         # existing payload so custom deployments do not receive an unknown field.
         if schema is Extracted and self.model in ("grok-4.5", "grok-4.6", "grok-4.7"):
             payload["reasoning_effort"] = self.extraction_reasoning_effort
+        if schema is DirectAnswer and self.direct_reasoning_effort is not None:
+            payload["reasoning_effort"] = self.direct_reasoning_effort
         if self.transport:
             return self.transport(payload)
         if not self.api_key:
             raise RuntimeError("Grok API key is missing")
         stage = schema.__name__.lower()
-        timeout = self.extraction_timeout if schema is Extracted else 25
+        timeout = self.extraction_timeout if schema is Extracted else (
+            self.direct_timeout if schema is DirectAnswer else 25)
         try:
             response = httpx.post("https://api.x.ai/v1/chat/completions", json=payload,
                                   headers={"Authorization": f"Bearer {self.api_key}"}, timeout=timeout)

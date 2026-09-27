@@ -1,6 +1,7 @@
 """Connect conversation state, agent decisions, scheduler, and approved actions."""
 
 import logging
+from time import perf_counter
 from datetime import date, datetime, time as clock_time, timedelta, timezone
 from threading import Lock, RLock
 from uuid import uuid4
@@ -11,6 +12,7 @@ from app.availability import AvailabilityWindow, choose_slot, looks_like_availab
 from app.bluebubbles import DeliveryUncertainError
 from app.models import ChatMessage, Plan, PlanFacts, Proposal
 from app.message_text import remove_rally_signature
+from app.latency import record_latency
 from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
                         valid_approval, valid_calendar_approval)
 from app.places import PlacesError
@@ -47,9 +49,10 @@ class RallyService:
     def __init__(self, store: Store, agent, search_fn, send_fn, stall_minutes: int = 30,
                  extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None,
                  portal_handler=None, web_answer_fn=None, adaptive_handler=None,
-                 availability_fn=None, time_zone: str = "America/New_York"):
+                 availability_fn=None, time_zone: str = "America/New_York", reply_agent=None):
         self.store = store
         self.agent = agent
+        self.reply_agent = reply_agent or agent
         self.extractor = extractor or agent
         self.calendar_fn = calendar_fn
         self.availability_fn = availability_fn
@@ -81,8 +84,13 @@ class RallyService:
     def receive(self, message: ChatMessage) -> bool:
         if not self._chat_allowed(message.chat_id):
             return False
+        started = perf_counter()
         with self._chat_lock(message.chat_id):
-            return self._receive(message)
+            record_latency("chat_lock_wait", perf_counter() - started)
+            try:
+                return self._receive(message)
+            finally:
+                record_latency("receive_total", perf_counter() - started)
 
     def recover_pending(self, chat_id: str, *, limit: int = 75) -> int:
         """Re-extract a bounded pending window without replaying replies or actions."""
@@ -194,17 +202,26 @@ class RallyService:
                 self.store.mark_processed(message.message_id)
                 return True
             if portal_answer is None:
-                answer = self.agent.answer_direct(message.text, plan.facts if plan else None, messages)
+                started = perf_counter()
+                try:
+                    answer = self.reply_agent.answer_direct(
+                        message.text, plan.facts if plan else None,
+                        self.store.recent_human_messages(message.chat_id, 20))
+                finally:
+                    record_latency("direct_model", perf_counter() - started)
             self._queue_and_send(message.chat_id, f"Rally: {answer}",
                                  "direct_reply", message.message_id)
             if portal_answer is not None:
                 self.store.mark_processed(message.message_id)
                 return True
+        started = perf_counter()
         try:
             facts = self.extractor.extract(messages, plan.facts if plan else None)
         except Exception as exc:
             self._record_extraction_failure([message.message_id], exc)
             raise
+        finally:
+            record_latency("extraction", perf_counter() - started)
         if facts.activity:
             if not plan or plan.state not in ("DONE", "ABANDONED") or (
                     facts.activity, facts.goal, facts.date) != (
@@ -568,6 +585,7 @@ class RallyService:
             if (chat_id is not None and current_chat_id != chat_id) or not self._chat_allowed(current_chat_id):
                 continue
             with self._chat_lock(current_chat_id):
+                started = perf_counter()
                 try:
                     self.send_fn(current_chat_id, remove_rally_signature(item["text"]))
                 except DeliveryUncertainError:
@@ -576,6 +594,8 @@ class RallyService:
                 except Exception:
                     self.store.set_delivery(item["id"], "failed", "Message delivery failed")
                     continue
+                finally:
+                    record_latency("bluebubbles_delivery", perf_counter() - started)
                 self.store.set_delivery(item["id"], "sent")
                 if item["kind"] == "final" and item["ref_id"]:
                     proposal = self.store.get_proposal(item["ref_id"])

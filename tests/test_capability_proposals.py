@@ -1,3 +1,4 @@
+import os
 import stat
 
 import pytest
@@ -28,9 +29,10 @@ def test_source_remains_inert_and_pending_review(tmp_path):
     assert store.read_source(proposal["id"]) == source
     assert not marker.exists()
     artifact = tmp_path / "data" / "capability_proposals" / proposal["id"]
-    assert stat.S_IMODE(artifact.stat().st_mode) == 0o700
-    assert stat.S_IMODE((artifact / "source.py").stat().st_mode) == 0o600
-    assert stat.S_IMODE((artifact / "metadata.json").stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(artifact.stat().st_mode) == 0o700
+        assert stat.S_IMODE((artifact / "source.py").stat().st_mode) == 0o600
+        assert stat.S_IMODE((artifact / "metadata.json").stat().st_mode) == 0o600
     assert store.get(proposal["id"]) == proposal
 
 

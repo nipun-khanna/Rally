@@ -39,6 +39,8 @@ def normalize_webhook(payload: Any, *, allowed_direct_chat_ids=frozenset()) -> I
     data = payload.get("data")
     if not isinstance(data, dict) or not isinstance(data.get("isFromMe"), bool):
         return None
+    if data.get("associatedMessageType"):
+        return None
 
     message_id = data.get("guid")
     text = data.get("text")

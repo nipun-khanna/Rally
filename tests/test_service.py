@@ -69,6 +69,32 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(self.service.receive(message))
         self.assertEqual(len(self.sent), 1)
 
+    def test_direct_reply_uses_latest_twenty_human_messages_from_its_chat(self):
+        for number in range(25):
+            self.store.add_message(ChatMessage(f"history-{number}", "chat1", "nick",
+                                              f"Message {number}", NOW + timedelta(seconds=number)))
+        self.store.add_message(ChatMessage("other-group", "chat2", "outsider", "Private", NOW))
+        self.store.add_message(ChatMessage("bot-message", "chat1", "rally", "Bot", NOW, True))
+        message = ChatMessage("direct-window", "chat1", "nick", "Rally, recap?",
+                              NOW + timedelta(seconds=26))
+        self.service.receive(message)
+        direct_messages = self.agent.direct_calls[-1][2]
+        self.assertEqual(len(direct_messages), 20)
+        self.assertEqual(direct_messages[0].message_id, "history-6")
+        self.assertEqual(direct_messages[-1].message_id, "direct-window")
+        self.assertTrue(all(item.chat_id == "chat1" and not item.is_from_rally
+                            for item in direct_messages))
+
+    def test_direct_reply_latency_logs_exclude_message_text(self):
+        message = ChatMessage("timed", "chat1", "nick", "Rally, secret phrase?", NOW)
+        with self.assertLogs('rally.latency', level='INFO') as logs:
+            self.service.receive(message)
+        output = '\n'.join(logs.output)
+        for phase in ('chat_lock_wait', 'direct_model', 'bluebubbles_delivery',
+                      'extraction', 'receive_total'):
+            self.assertIn(f'phase={phase}', output)
+        self.assertNotIn('secret phrase', output)
+
     def test_direct_reply_is_not_signed_with_rally_name(self):
         message = ChatMessage("direct-unsigned", "chat1", "nick", "Hey Rally, what's up?", NOW)
         self.service.receive(message)

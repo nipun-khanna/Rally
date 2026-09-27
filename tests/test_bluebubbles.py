@@ -58,6 +58,16 @@ class BlueBubblesTests(unittest.TestCase):
         event["data"]["chats"] = [{"guid": "iMessage;-;+15551234567", "participants": [{}, {}]}]
         self.assertIsNone(normalize_webhook(event))
 
+    def test_reaction_is_not_a_planning_message(self):
+        event = group_event()
+        event['data'].update({'text': 'Loved “Hey Rally, book it”',
+                              'associatedMessageType': 2000,
+                              'associatedMessageGuid': 'message-0'})
+        self.assertIsNone(normalize_webhook(event))
+        event = group_event()
+        event['data']['associatedMessageType'] = 0
+        self.assertIsNotNone(normalize_webhook(event))
+
     def test_accepts_local_human_prompt_but_ignores_rally_echo(self):
         event = group_event()
         event["data"].update({"isFromMe": True, "handle": None,

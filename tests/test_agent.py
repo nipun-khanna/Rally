@@ -64,6 +64,20 @@ class AgentTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 GrokClient('key', extraction_reasoning_effort=effort)
 
+    def test_fast_reply_model_and_timeout_are_independent_of_extraction(self):
+        captured = []
+        client = GrokClient('key', model='grok-4.3',
+                            direct_reasoning_effort='none', direct_timeout=8,
+                            transport=lambda payload: captured.append(payload) or {"message": "Hello"})
+        self.assertEqual(client.answer_direct('Rally hello', None, self.messages), 'Hello')
+        self.assertEqual(captured[0]['model'], 'grok-4.3')
+        self.assertEqual(captured[0]['reasoning_effort'], 'none')
+        with patch('app.agent.httpx.post', side_effect=httpx.ReadTimeout('private text')) as post:
+            with self.assertRaises(RuntimeError):
+                GrokClient('key', model='grok-4.3', direct_reasoning_effort='none',
+                           direct_timeout=8).answer_direct('Rally hello', None, self.messages)
+        self.assertEqual(post.call_args.kwargs['timeout'], 8)
+
     def test_direct_answer_uses_group_context_and_validates_text(self):
         calls = []
         def transport(payload):

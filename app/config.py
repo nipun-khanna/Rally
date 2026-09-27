@@ -53,6 +53,9 @@ class Settings:
     history_enabled: bool = True
     grok_extraction_timeout: float = 60
     grok_extraction_effort: str = "low"
+    grok_reply_model: str = "grok-4.3"
+    grok_reply_effort: str = "none"
+    grok_reply_timeout: float = 25
     web_enabled: bool = False
     web_daily_limit: int = 0
     web_max_tool_calls: int = 3
@@ -82,6 +85,14 @@ class Settings:
         extraction_effort = source.get("RALLY_GROK_EXTRACTION_EFFORT", "low").lower()
         if extraction_effort not in ("low", "medium", "high"):
             raise ValueError("Invalid Grok extraction reasoning effort")
+        reply_model = source.get("RALLY_GROK_REPLY_MODEL", "grok-4.3").strip()
+        reply_effort = source.get("RALLY_GROK_REPLY_REASONING_EFFORT", "none").lower()
+        reply_timeout = float(source.get("RALLY_GROK_REPLY_TIMEOUT", "25"))
+        if reply_model not in ("grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7"):
+            raise ValueError("Unsupported Grok reply model")
+        supported_reply_efforts = ("none", "low", "medium", "high") if reply_model == "grok-4.3" else ("low", "medium", "high")
+        if reply_effort not in supported_reply_efforts or not 1 <= reply_timeout <= 120:
+            raise ValueError("Invalid Grok reply configuration")
         extraction_provider = source.get("RALLY_EXTRACTION_PROVIDER", "grok").lower()
         if stall_minutes < 1 or tick_seconds < 1 or not 1 <= max_requests <= 1000:
             raise ValueError("Invalid Rally interval or place request cap")
@@ -130,6 +141,9 @@ class Settings:
             history_enabled=source.get("RALLY_HISTORY_ENABLED", "1") == "1",
             grok_extraction_timeout=extraction_timeout,
             grok_extraction_effort=extraction_effort,
+            grok_reply_model=reply_model,
+            grok_reply_effort=reply_effort,
+            grok_reply_timeout=reply_timeout,
             web_enabled=web_enabled,
             web_daily_limit=web_daily_limit,
             web_max_tool_calls=web_max_tool_calls,
@@ -148,6 +162,10 @@ def build_service(settings: Settings) -> RallyService:
                        default_city=settings.default_city, time_zone=settings.time_zone,
                        extraction_timeout=settings.grok_extraction_timeout,
                        extraction_reasoning_effort=settings.grok_extraction_effort)
+    reply_agent = GrokClient(settings.xai_api_key, settings.grok_reply_model,
+                             default_city=settings.default_city, time_zone=settings.time_zone,
+                             direct_reasoning_effort=settings.grok_reply_effort,
+                             direct_timeout=settings.grok_reply_timeout)
     extractor = (MuseExtractor(settings.meta_model_api_key,
                                default_city=settings.default_city, time_zone=settings.time_zone)
                  if settings.extraction_provider == "muse" else agent)
@@ -241,6 +259,7 @@ def build_service(settings: Settings) -> RallyService:
 
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
+                        reply_agent=reply_agent,
                         allowed_chat_ids=settings.allowed_chat_ids,
                         web_answer_fn=web_answer_fn, adaptive_handler=adaptive_handler,
                         availability_fn=availability_fn, time_zone=settings.time_zone)

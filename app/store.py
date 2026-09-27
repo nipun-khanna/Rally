@@ -179,6 +179,13 @@ class Store:
         return [ChatMessage(r["message_id"], r["chat_id"], r["sender_id"], r["text"],
                             datetime.fromisoformat(r["sent_at"]), bool(r["is_from_rally"])) for r in reversed(rows)]
 
+    def recent_human_messages(self, chat_id: str, limit: int = 20) -> list[ChatMessage]:
+        with self._db() as db:
+            rows = db.execute("""SELECT * FROM messages WHERE chat_id=? AND is_from_rally=0
+                ORDER BY sent_at DESC LIMIT ?""", (chat_id, limit)).fetchall()
+        return [ChatMessage(r["message_id"], r["chat_id"], r["sender_id"], r["text"],
+                            datetime.fromisoformat(r["sent_at"]), False) for r in reversed(rows)]
+
     def get_plan(self, chat_id: str) -> Plan | None:
         with self._db() as db:
             row = db.execute("SELECT * FROM plans WHERE chat_id=? ORDER BY rowid DESC LIMIT 1", (chat_id,)).fetchone()

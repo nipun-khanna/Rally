@@ -21,10 +21,21 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(settings.demo_venues)
             self.assertEqual(settings.allowed_chat_ids, frozenset())
             self.assertEqual(settings.grok_extraction_effort, "low")
+            self.assertEqual((settings.grok_reply_model, settings.grok_reply_effort),
+                             ("grok-4.3", "none"))
             self.assertEqual(Settings.from_env({"RALLY_GROK_EXTRACTION_EFFORT":"MEDIUM"}).grok_extraction_effort,
                              "medium")
             with self.assertRaises(ValueError):
                 Settings.from_env({"RALLY_GROK_EXTRACTION_EFFORT":"none"})
+            with self.assertRaises(ValueError):
+                Settings.from_env({"RALLY_GROK_REPLY_MODEL": "grok-4.7"})
+            with self.assertRaises(ValueError):
+                Settings.from_env({"RALLY_GROK_REPLY_MODEL": "other-model"})
+            custom = Settings.from_env({"RALLY_GROK_REPLY_MODEL": "grok-4.7",
+                                        "RALLY_GROK_REPLY_REASONING_EFFORT": "low",
+                                        "RALLY_GROK_REPLY_TIMEOUT": "12"})
+            self.assertEqual((custom.grok_reply_model, custom.grok_reply_effort,
+                              custom.grok_reply_timeout), ("grok-4.7", "low", 12))
             chosen = Settings.from_env({"RALLY_ALLOWED_CHAT_GUIDS": "any;+;chat1, any;+;chat2"})
             self.assertEqual(chosen.allowed_chat_ids, frozenset({"any;+;chat1", "any;+;chat2"}))
             with self.assertRaises(ValueError):
@@ -35,6 +46,9 @@ class ConfigTests(unittest.TestCase):
             settings = Settings.from_env({"RALLY_DATABASE_PATH": str(Path(tmp) / "r.sqlite3"),
                                           "RALLY_DEMO_MODE": "1", "RALLY_DEMO_VENUES": "1"})
             service = build_service(settings)
+            self.assertEqual(service.agent.model, "grok-4.7")
+            self.assertEqual(service.reply_agent.model, "grok-4.3")
+            self.assertEqual(service.reply_agent.direct_reasoning_effort, "none")
             places = service.search_fn(None)
             self.assertEqual(len(places), 1)
             self.assertEqual(places[0].source, "demo")

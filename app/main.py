@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 import logging
+from time import perf_counter
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from app.bluebubbles import normalize_webhook
 from app.debug_view import render_debug_view
 from app.history import BlueBubblesHistoryClient, HistoryImporter, normalize_archive_message
 from app.models import ChatMessage
+from app.latency import record_latency
 from app.portal_commands import portal_reply
 from app.portal_data import build_portal_data
 from app.portal_store import PortalStore
@@ -175,6 +177,16 @@ def create_app(service=None, *, webhook_token: str | None = None,
                     pass
 
     app = FastAPI(title="Rally", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def webhook_timing(request, call_next):
+        if request.url.path != "/webhooks/bluebubbles":
+            return await call_next(request)
+        started = perf_counter()
+        try:
+            return await call_next(request)
+        finally:
+            record_latency("webhook_total", perf_counter() - started)
 
     @app.get("/health")
     def health():
