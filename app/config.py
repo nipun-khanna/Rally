@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Mapping
 
 from app.agent import GrokClient
-from app.bluebubbles import send_message
+from app.bluebubbles import is_private_direct_chat, send_message
+from app.group_memory import GroupMemoryStore
+from app.group_turns import GroupTurnStore
+from app.message_text import add_rally_signature
+from app.reactions import send_reaction, set_typing
 from app.calendar import (CalendarApproval, CalendarCredentials, CalendarError,
                           create_calendar_event, get_calendar_busy)
 from app.muse import MuseExtractor
@@ -128,9 +132,8 @@ class Settings:
         browser_max_actions = int(source.get("RALLY_BROWSER_MAX_ACTIONS", "6"))
         browser_max_text_chars = int(source.get("RALLY_BROWSER_MAX_TEXT_CHARS", "6000"))
         if browser_enabled:
-            if (not browser_owner_chat_id.startswith("iMessage;-;") or
-                    not browser_owner_chat_id.removeprefix("iMessage;-;")):
-                raise ValueError("Browser owner must be a private iMessage chat")
+            if not is_private_direct_chat(browser_owner_chat_id):
+                raise ValueError("Browser owner must be a private {service};-;{id} chat")
             if not browser_owner_sender_id:
                 raise ValueError("Browser owner sender ID is required")
             browser_root = Path("data/browser").absolute()
@@ -241,7 +244,8 @@ def build_service(settings: Settings) -> RallyService:
     def send(chat_id: str, text: str):
         if not settings.bluebubbles_url or not settings.bluebubbles_password:
             raise RuntimeError("BlueBubbles is not configured")
-        return send_message(settings.bluebubbles_url, settings.bluebubbles_password, chat_id, text)
+        return send_message(settings.bluebubbles_url, settings.bluebubbles_password, chat_id,
+                            add_rally_signature(text))
 
     calendar_fn = None
     availability_fn = None
@@ -297,9 +301,24 @@ def build_service(settings: Settings) -> RallyService:
             build_default_registry(settings.allowed_chat_ids, plan_store=store,
                                    web_answer_fn=web_answer_fn), proposal_generator)
 
+    def react(chat_id: str, message_id: str, reaction: str):
+        if not settings.bluebubbles_url or not settings.bluebubbles_password:
+            return None
+        return send_reaction(settings.bluebubbles_url, settings.bluebubbles_password,
+                             chat_id, message_id, reaction, wait_for_helper=False)
+
+    def typing(chat_id: str, on: bool):
+        if not settings.bluebubbles_url or not settings.bluebubbles_password:
+            return None
+        return set_typing(settings.bluebubbles_url, settings.bluebubbles_password, chat_id, on,
+                          wait_for_helper=False)
+
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
                         reply_agent=reply_agent,
                         allowed_chat_ids=settings.allowed_chat_ids,
                         web_answer_fn=web_answer_fn, adaptive_handler=adaptive_handler,
-                        availability_fn=availability_fn, time_zone=settings.time_zone)
+                        availability_fn=availability_fn, time_zone=settings.time_zone,
+                        group_memory=GroupMemoryStore(settings.database_path),
+                        group_turns=GroupTurnStore(settings.database_path),
+                        react_fn=react, typing_fn=typing, defer_heavy_work=True)

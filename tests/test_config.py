@@ -24,7 +24,7 @@ def test_browser_defaults_off_and_requires_private_owner():
 @pytest.mark.parametrize("override", [
     {"RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;+;group"},
     {"RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;-;"},
-    {"RALLY_BROWSER_OWNER_CHAT_ID": "other;-;person"},
+    {"RALLY_BROWSER_OWNER_CHAT_ID": "any"},
     {"RALLY_BROWSER_OWNER_SENDER_ID": ""},
     {"RALLY_BROWSER_PROFILE_PATH": "data/other/profile"},
     {"RALLY_BROWSER_PROFILE_PATH": "data/browser/../other"},
@@ -62,6 +62,28 @@ def test_browser_accepts_limits_and_paths_within_ignored_directory():
     assert settings.browser_download_path == Path("data/browser/custom-downloads")
     assert settings.browser_max_actions == 12
     assert settings.browser_max_text_chars == 12000
+
+
+def test_browser_accepts_any_prefixed_private_owner_chat():
+    settings = Settings.from_env({
+        "RALLY_BROWSER_ENABLED": "1",
+        "RALLY_BROWSER_OWNER_CHAT_ID": "any;-;+15555550100",
+        "RALLY_BROWSER_OWNER_SENDER_ID": "local-imessage-account",
+        "RALLY_BROWSER_ADMIN_TOKEN": "W6SWqB8dA_5f5SUS2ms-CNu0WhxFLBL34ff2A7vfVBQ",
+    })
+    assert settings.browser_owner_chat_id == "any;-;+15555550100"
+    assert settings.browser_owner_sender_id == "local-imessage-account"
+
+
+def test_browser_accepts_service_dash_private_owner_chat():
+    settings = Settings.from_env({
+        "RALLY_BROWSER_ENABLED": "1",
+        "RALLY_BROWSER_OWNER_CHAT_ID": "SMS;-;+15555550100",
+        "RALLY_BROWSER_OWNER_SENDER_ID": "local-imessage-account",
+        "RALLY_BROWSER_ADMIN_TOKEN": "W6SWqB8dA_5f5SUS2ms-CNu0WhxFLBL34ff2A7vfVBQ",
+    })
+    assert settings.browser_owner_chat_id == "SMS;-;+15555550100"
+    assert settings.browser_owner_sender_id == "local-imessage-account"
 
 
 class ConfigTests(unittest.TestCase):
@@ -127,6 +149,22 @@ class ConfigTests(unittest.TestCase):
             self.assertIsInstance(service.extractor, MuseExtractor)
             self.assertIsInstance(service.agent, GrokClient)
             self.assertEqual(service.extractor.api_key, "meta-test-key")
+            self.assertTrue(service.defer_heavy_work)
+            self.assertIsNotNone(service.typing_fn)
+
+    def test_live_react_and_typing_do_not_block_on_helper_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings.from_env({
+                "RALLY_DATABASE_PATH": str(Path(tmp) / "r.sqlite3"),
+                "RALLY_BLUEBUBBLES_URL": "http://127.0.0.1:1234",
+                "RALLY_BLUEBUBBLES_PASSWORD": "secret",
+            })
+            with patch("app.config.send_reaction") as react, patch("app.config.set_typing") as typing:
+                service = build_service(settings)
+                service.react_fn("any;+;chat1", "msg", "like")
+                service.typing_fn("any;+;chat1", True)
+            self.assertIs(react.call_args.kwargs.get("wait_for_helper"), False)
+            self.assertIs(typing.call_args.kwargs.get("wait_for_helper"), False)
 
     def test_calendar_is_opt_in_and_capped_before_provider_call(self):
         with self.assertRaises(ValueError):

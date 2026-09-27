@@ -27,16 +27,18 @@ python3.13 -m venv .venv
 
 Copy `.env.example` to `.env` and set the credentials. Export its variables before starting the server; `.env` is ignored by Git. BlueBubbles needs a running Mac server and a group-chat webhook. Grok requires an xAI key. Geoapify offers a free places and geocoding tier; Rally caps its own requests at 100 per UTC day by default. Only Grok is allowed to incur API charges. The exact [BlueBubbles setup and demo steps](docs/demo.md) explain the remaining configuration.
 
+On the Rally Mac, BlueBubbles currently sends new-message webhooks to `127.0.0.1:8770`. Start Rally on that port so incoming texts reach it. Port `8000` may be used by another local app; if you choose a different port, update the webhook URL in BlueBubbles Server → **API & Webhooks** to use that port.
+
 ```sh
 set -a
 . ./.env
 set +a
-.venv/bin/uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log
+.venv/bin/uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8770 --no-access-log
 ```
 
-Health: `GET /health`. Incoming BlueBubbles events: `POST /webhooks/bluebubbles?token=<RALLY_WEBHOOK_TOKEN>`. The backend checks the shared token and ignores Rally's own replies, direct-chat, and duplicate messages. Scheduler checks run automatically. The debug view and optional demo trigger require the same token.
+Keep that terminal open while Rally runs. In another terminal, check readiness with `.venv/bin/python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8770/health").read().decode())'`; a healthy server returns `{"status":"ok"}`. Stop Rally with **Ctrl-C** in the server terminal. Incoming BlueBubbles events use `POST /webhooks/bluebubbles?token=<RALLY_WEBHOOK_TOKEN>`. The backend checks the shared token and ignores Rally's own replies, direct-chat, and duplicate messages. Scheduler checks run automatically. The debug view and optional demo trigger require the same token.
 
-In an allowlisted group, a member can address Rally directly—for example, `Hey Rally, what's the plan?` or `Rally, recap the options.` Rally replies in that thread using the group's recent messages and saved plan. Incidental mentions do not prompt replies. A request to book is answered as a question; only the separate, explicit approval phrase documented below can authorize a reservation. Rally uses the configured BlueBubbles account; when that is your current iMessage account, your own messages can also address it. Rally-generated replies begin with `Rally:` and are ignored on inbound.
+In an allowlisted group, a member can address Rally directly—for example, `Hey Rally, what's the plan?` or `Rally, recap the options.` Rally replies in that thread using the group's recent messages and saved plan. Incidental mentions do not prompt replies. A request to book is answered as a question; only the separate, explicit approval phrase documented below can authorize a reservation. Rally uses the configured BlueBubbles account; when that is your current iMessage account, your own messages can also address it. For now, outbound texts begin with `Rally:` and use lowercase body text; Rally's own replies are ignored on inbound.
 
 Set `RALLY_ALLOWED_CHAT_GUIDS` to the exact BlueBubbles group-chat GUIDs that Rally may serve, separated by commas. It defaults to an empty set: the live backend will not ingest, schedule, or send for any group until one is configured. See [docs/demo.md](docs/demo.md) for the iMessage identity and group setup.
 
@@ -71,6 +73,10 @@ Optional Google Calendar availability and event creation are documented in [docs
 ### Public web research
 
 With `RALLY_WEB_ENABLED=1`, addressed public/current-information questions (for example, “Rally, find food nearby”) use xAI web search and return cited URLs in the same iMessage group. Search is read-only; it cannot book, send messages to others, create events, or run code. A persisted daily limit and per-request tool cap control usage. Only the current request and an abstract group-tone label go to this search path. Setup, cost, and limitations: [docs/web-search.md](docs/web-search.md).
+
+### Group conversation
+
+In allowlisted groups, a direct `Rally` call opens a five-minute follow-up turn, with per-group memory, optional BlueBubbles tapbacks when the Private API helper is connected, and a local refusal for illegal-assistance requests. Details: [docs/group-conversation.md](docs/group-conversation.md). Coding agents that live-iterate with real BlueBubbles iMessages follow [docs/rally-live-iteration.md](docs/rally-live-iteration.md).
 
 ### Relationship reminders
 

@@ -103,3 +103,17 @@
 
 - User correction: stop signing sent messages as Rally.
 - Rule: deliver replies and reminders as natural message text without a `Rally:` prefix. Keep bot identity in transport metadata/internal state, and normalize already queued outbound messages before sending.
+## 2026-09-26 — Conversation follow-ups after a direct Rally call
+
+- When a member explicitly addresses Rally and Rally answers, the next short question in the same group should inherit that conversational turn for a bounded period. Requiring the name on every follow-up makes Rally appear to ignore natural replies such as “what can you do?”
+- Keep the carry-forward rule bounded and test that it expires, is reset by unrelated messages, and does not trigger on arbitrary group conversation.
+
+## 2026-09-26 — Temporary outbound text style
+
+- User temporarily changed the outbound convention: prefix texts with `Rally:` and write the body in lowercase.
+- Apply presentation at the BlueBubbles send boundary so queued content stays canonical, retries get the same formatting, and inbound matching remains unchanged. Treat the user's later style instructions as superseding this temporary rule.
+
+## 2026-09-26 — Judgement during group chat floods
+
+- User correction: a called Rally should not answer every follow-up or repeated call when the group is spammed.
+- Rule: treat relevance as permission to consider a reply, then require usefulness and apply burst coalescing plus a per-group rate cap before sending a text or reaction. Keep explicit approvals and safety controls operable.

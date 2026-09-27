@@ -4,6 +4,8 @@
 **Date:** 2026-09-26
 **Product source:** `PRD.md`; this extends adaptive Rally requests and existing public web research.
 
+The Sunday repository documents a local iMessage bridge pipeline (`watcher → debouncer → classifier → agent → sender`) with an agent endpoint. It does not implement browser automation. Rally will reuse the local-host principle: the browser runs on the Mac beside the BlueBubbles service, while Rally keeps its existing message transport and registered-tool boundary. See [Sunday README](https://github.com/priyanshbhatter24/sunday).
+
 ## Purpose
 
 Rally should be able to use a real browser to carry out explicitly requested web tasks. This includes opening and reading public pages, navigating between pages, searching, clicking, typing, scrolling, capturing page state, and using a user-authenticated browser session to interact with sites. The browser is a registered Rally capability; it is not the Codex session's browser and does not replace BlueBubbles/iMessage.
@@ -21,9 +23,9 @@ Success means an explicitly addressed request such as “Rally, check the airlin
 
 ### Local browser runner
 
-Run a browser runner on the same Mac as the BlueBubbles/Rally service. It controls a dedicated browser profile through a maintained browser automation library (Playwright is the proposed implementation), exposed only to the local Rally process over a loopback-only interface. It must not bind to a public network interface. Rally's normal service process remains the orchestrator and policy authority; page JavaScript is never executed as arbitrary agent code.
+Run a browser runner on the same Mac as the BlueBubbles/Rally service. The initial implementation uses Python Playwright with its managed Chromium build. The browser is launched locally by Rally and is controlled in-process; no remote browser vendor or public browser-control endpoint is required. It must not bind to a public network interface. Rally's normal service process remains the orchestrator and policy authority; page JavaScript is never executed as arbitrary agent code.
 
-The profile is isolated from the user's everyday browser profile. The user completes sign-in and multi-factor authentication directly in the browser UI. Rally stores neither passwords nor copied authentication tokens. Session cookies remain in the dedicated browser profile, so the profile directory must have owner-only permissions and a documented sign-out/reset operation. A browser restart must not silently switch to another profile.
+The profile is isolated from the user's everyday browser profile. The user completes sign-in and multi-factor authentication directly in the browser UI. Rally stores neither passwords nor copied authentication tokens. Session cookies remain in the dedicated browser profile, so the profile directory must have owner-only permissions and a documented sign-out/reset operation. A browser restart must not silently switch to another profile. Authenticated browsing and consequential actions are restricted to one locally configured private chat and its configured owner sender ID; group-chat browser tasks use a fresh, unauthenticated context and remain read-only.
 
 The runner exposes small typed operations rather than raw Playwright or shell access:
 

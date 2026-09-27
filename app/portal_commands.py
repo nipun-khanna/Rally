@@ -2,6 +2,8 @@
 
 import re
 
+from app.group_admin_commands import hosted_page_reply
+
 
 _SECTION = r"history|messages|media|photos|attachments|analytics|stats|plans|members|activity"
 _ALIASES = {"messages": "history", "photos": "media", "attachments": "media", "stats": "analytics"}
@@ -39,5 +41,5 @@ def portal_reply(message, portal_store, app_url: str, *, history_enabled: bool =
     if re.search(r"\b(?:link|url|send|open|see|share)\b", text, re.I) or re.search(
             r"\b(?:our|group)\s+(?:portal|page|site)\b", text, re.I):
         public_id = portal_store.ensure_group(chat_id)
-        return f"Our group page: {app_url.rstrip('/')}/{public_id}"
+        return hosted_page_reply(f"{app_url.rstrip('/')}/{public_id}")
     return None

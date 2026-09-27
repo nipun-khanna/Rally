@@ -1,5 +1,23 @@
 # Rally MVP implementation tasks
 
+Live BlueBubbles send → measure → patch → reload loop for coding agents: [docs/rally-live-iteration.md](../docs/rally-live-iteration.md).
+
+## Group conversation, memory, reactions, and speed — in progress
+
+The user approved implementation of the [group conversation design](../docs/superpowers/specs/2026-09-26-rally-group-conversation.md) and [implementation plan](../docs/superpowers/plans/2026-09-26-rally-group-conversation.md). Direct Rally calls open a five-minute relevant follow-up turn in each allowed group. Basic profanity is allowed; requests facilitating illegal activity receive a refusal.
+
+- [x] Build and integrate durable, source-linked, group-scoped memory and forgetting.
+- [x] Add BlueBubbles tapback adapter with Private API readiness and duplicate protection.
+- [x] Add typed relevance, safety, reply, reaction, and memory-candidate decision.
+- [x] Wire per-chat turn state and preserve existing command and approval precedence.
+- [x] Reduce reply latency, add sanitized timings, and document live setup.
+- [x] Defer plan extract and background memory learning until after the webhook returns.
+- [x] Cache Private API helper status; add typing indicators when the helper is connected.
+- [x] Forget exact stored fact text without substring wipes; wrap `answer_direct` through `decide_conversation`.
+- [x] Verify group isolation, safety, expiry, duplicates, reaction disabled/enabled states, and full suite.
+
+The current BlueBubbles server has `private_api=false`, `helper_connected=false`, and macOS SIP enabled. Live tapbacks require owner-side Private API setup; normal BlueBubbles text and chat APIs work.
+
 ## Rally browser capability
 
 - [x] Write and self-review the browser capability spec: [Rally browser capability](../docs/superpowers/specs/2026-09-26-rally-browser-capability.md).
@@ -226,6 +244,18 @@ Final local verification: 88 `unittest` cases passed with `ResourceWarning` trea
 The local test page uses simulated Grok, place search, and message delivery. It verifies the backend flow and debug view, but cannot establish that the live iMessage integration or external providers fulfill the PRD acceptance criteria.
 
 > **For agentic workers:** Implement tasks in order. Read [SPEC.md](../SPEC.md) and [PRD.md](../PRD.md) first; use the checkboxes to track progress.
+
+## Rally local browser capability — plan review pending (2026-09-26)
+
+- [x] Inspect the existing adaptive tool registry and browser spec; confirm the Sunday repo demonstrates a local Mac service pattern, not browser automation.
+- [x] Draft an implementation plan for a local Playwright browser, isolated profiles, chat-specific access, exact approval for external side effects, and synthetic security tests.
+- [x] Self-review plan/spec alignment and correct runtime mode: normal tasks are headless; headed browser is only for user-driven sign-in.
+- [x] User approved implementation on `feat/local-browser-tool`.
+- [ ] Implement the six tasks in order; install Chromium and verify on the Rally Mac.
+
+### Execution review — in progress
+
+The design runs Rally's browser on the Mac hosting BlueBubbles. Sunday documents a local iMessage bridge, not a browser, so only its local-host pattern is relevant. The plan uses a dedicated Playwright profile, headless task execution, and a separate headed sign-in command. The existing adaptive audit showed direct DMs bypass group adaptive routing; the plan now adds a separate owner-authenticated path. No real site accounts will be signed into during automated tests.
 
 **Goal:** Ship the complete iMessage dinner demo in under two minutes, including one automatic intervention after a plan stalls.
 
@@ -572,3 +602,11 @@ results until teammates deliver.
 - [ ] Set `RALLY_VOICE_ENABLED=1` once the xAI key is confirmed rotated and
       live-test the demo script in docs/voice.md.
 - One labeled Akshit–Nipun group request entered through BlueBubbles, completed the adaptive `get_plan_status` step and sent a same-chat direct reply (`Rally: {"status": "none"}`). Inbound message was processed, adaptive request status `complete`, outbox `sent`. This verifies the read-only live adaptive route; generated code and commitment tools were not tested in the live chat.
+
+## Allowlist E1 — 2026-09-26
+
+- [x] Resolve duplicate E1 names; user selected the group with 11 participants.
+- [x] Add exact BlueBubbles GUID to ignored local `.env`, preserving existing entries.
+- [x] Verify configured GUID using `Settings.from_env`.
+
+Review: Saved configuration verified. No running Rally process was found on port 8770; the change will apply at next startup. No message sent.

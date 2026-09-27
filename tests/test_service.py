@@ -59,7 +59,7 @@ class ServiceTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_direct_address_replies_once_in_same_chat_with_plan_context(self):
-        message = ChatMessage("direct-1", "chat1", "nick", "Hey Rally what's the plan?", NOW)
+        message = ChatMessage("direct-1", "chat1", "nick", "Hey Rally where should we eat?", NOW)
         self.assertTrue(self.service.receive(message))
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0][0], "chat1")
@@ -75,7 +75,7 @@ class ServiceTests(unittest.TestCase):
                                               f"Message {number}", NOW + timedelta(seconds=number)))
         self.store.add_message(ChatMessage("other-group", "chat2", "outsider", "Private", NOW))
         self.store.add_message(ChatMessage("bot-message", "chat1", "rally", "Bot", NOW, True))
-        message = ChatMessage("direct-window", "chat1", "nick", "Rally, recap?",
+        message = ChatMessage("direct-window", "chat1", "nick", "Hey Rally, where should we eat?",
                               NOW + timedelta(seconds=26))
         self.service.receive(message)
         direct_messages = self.agent.direct_calls[-1][2]
@@ -94,6 +94,69 @@ class ServiceTests(unittest.TestCase):
                       'extraction', 'receive_total'):
             self.assertIn(f'phase={phase}', output)
         self.assertNotIn('secret phrase', output)
+
+    def test_direct_call_reacts_with_eyes_then_like_after_reply(self):
+        reactions = []
+        self.service.react_fn = lambda chat_id, message_id, reaction: reactions.append(
+            (chat_id, message_id, reaction))
+        seen_before_reply = []
+
+        def slow_answer(request, facts, messages):
+            seen_before_reply.append(list(reactions))
+            return "working on it"
+
+        self.agent.answer_direct = slow_answer
+        message = ChatMessage("react-direct", "chat1", "nick", "Rally, where should we eat?", NOW)
+        self.assertTrue(self.service.receive(message))
+        self.assertEqual(seen_before_reply[0], [("chat1", "react-direct", "👀")])
+        self.assertEqual(reactions, [
+            ("chat1", "react-direct", "👀"),
+            ("chat1", "react-direct", "like"),
+        ])
+        self.assertEqual(len(self.sent), 1)
+
+    def test_ordinary_chat_does_not_react(self):
+        reactions = []
+        self.service.react_fn = lambda chat_id, message_id, reaction: reactions.append(reaction)
+        self.assertTrue(self.service.receive(ChatMessage("ordinary", "chat1", "nick", "Dinner Friday?", NOW)))
+        self.assertEqual(reactions, [])
+        self.assertEqual(self.sent, [])
+
+    def test_failed_delivery_keeps_eyes_without_completion_reaction(self):
+        reactions = []
+        self.service.react_fn = lambda chat_id, message_id, reaction: reactions.append(reaction)
+        self.service.send_fn = lambda chat_id, text: (_ for _ in ()).throw(RuntimeError("offline"))
+        self.assertTrue(self.service.receive(ChatMessage("react-fail", "chat1", "nick", "Rally, recap?", NOW)))
+        self.assertEqual(reactions, ["👀"])
+
+    def test_short_question_after_direct_reply_carries_one_followup_turn(self):
+        first = ChatMessage("direct-followup-1", "chat1", "nick",
+                            "Rally, what can you help with?", NOW)
+        followup = ChatMessage("direct-followup-2", "chat1", "sarah",
+                               "What can you do?", NOW + timedelta(minutes=1))
+
+        self.assertTrue(self.service.receive(first))
+        self.assertTrue(self.service.receive(followup))
+
+        self.assertEqual([call[0] for call in self.agent.direct_calls],
+                         [first.text, followup.text])
+        self.assertEqual(len(self.sent), 2)
+
+    def test_followup_turn_does_not_carry_past_unrelated_or_expire(self):
+        first = ChatMessage("direct-boundary-1", "chat1", "nick", "Rally, hello", NOW)
+        self.service.receive(first)
+        unrelated = ChatMessage("direct-boundary-2", "chat1", "sarah",
+                                "Dinner is at seven", NOW + timedelta(minutes=1))
+        self.service.receive(unrelated)
+        later = ChatMessage("direct-boundary-3", "chat1", "sarah",
+                            "What can you do?", NOW + timedelta(minutes=2))
+        self.service.receive(later)
+        stale = ChatMessage("direct-boundary-4", "chat1", "sarah",
+                            "What can you do?", NOW + timedelta(minutes=6))
+        self.service.receive(stale)
+
+        self.assertEqual([call[0] for call in self.agent.direct_calls], [first.text])
+        self.assertEqual(len(self.sent), 1)
 
     def test_direct_reply_is_not_signed_with_rally_name(self):
         message = ChatMessage("direct-unsigned", "chat1", "nick", "Hey Rally, what's up?", NOW)
@@ -125,11 +188,11 @@ class ServiceTests(unittest.TestCase):
                 raise RuntimeError("extractor unavailable")
         message = ChatMessage("direct-retry", "chat1", "nick", "Rally, recap?", NOW)
         self.service.extractor = FailingExtractor()
-        with self.assertRaisesRegex(RuntimeError, "extractor unavailable"):
-            self.service.receive(message)
-        self.assertEqual(len(self.sent), 1)
-        self.service.extractor = self.agent
         self.assertTrue(self.service.receive(message))
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.store.is_processed(message.message_id))
+        self.service.extractor = self.agent
+        self.assertFalse(self.service.receive(message))
         self.assertEqual(len(self.sent), 1)
 
     def test_stalled_plan_proposes_once_and_books_only_after_approval(self):
