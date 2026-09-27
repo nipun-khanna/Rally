@@ -18,6 +18,14 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 
+def is_private_direct_chat(chat_id: str) -> bool:
+    """True for a 1:1 ``{service};-;{id}`` thread. Groups use ``;+;``."""
+    if not isinstance(chat_id, str) or ";+;" in chat_id:
+        return False
+    service, sep, rest = chat_id.partition(";-;")
+    return bool(sep) and bool(service) and bool(rest)
+
+
 @dataclass(frozen=True)
 class IncomingMessage:
     message_id: str

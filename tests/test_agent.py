@@ -1,10 +1,16 @@
+import json
 import unittest
 from unittest.mock import patch
 import httpx
 from datetime import datetime, timezone
 
-from app.agent import DirectAnswer, Extracted, GrokClient
+from app.agent import CONVERSATION_DECISION_TIMEOUT, DirectAnswer, Extracted, GrokClient, MemoryLearnResult
 from app.models import ChatMessage, PlanFacts
+
+
+def _direct(message):
+    return {"relevant": True, "safety": "ok", "message": message, "reaction": None,
+            "memory_candidates": []}
 
 
 class AgentTests(unittest.TestCase):
@@ -39,10 +45,12 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(failure.exception.kind, 'response')
 
     def test_direct_reply_keeps_short_timeout_when_extraction_budget_changes(self):
-        response = httpx.Response(200, json={'choices': [{'message': {'content': '{"message":"Hello"}'}}]}, request=httpx.Request('POST', 'https://api.x.ai/v1/chat/completions'))
+        response = httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(_direct('Hello'))}}]}, request=httpx.Request('POST', 'https://api.x.ai/v1/chat/completions'))
         with patch('app.agent.httpx.post', return_value=response) as post:
             self.assertEqual(GrokClient('key', extraction_timeout=90).answer_direct('Rally hello', None, self.messages), 'Hello')
-        self.assertEqual(post.call_args.kwargs['timeout'], 25)
+        # wrapped through decide_conversation; fail over to local recap before a hang
+        self.assertEqual(post.call_args.kwargs['timeout'], CONVERSATION_DECISION_TIMEOUT)
+        self.assertEqual(CONVERSATION_DECISION_TIMEOUT, 2)
 
     def test_extraction_timeout_configuration_is_bounded(self):
         for timeout in (0, 121, float('nan')):
@@ -68,21 +76,29 @@ class AgentTests(unittest.TestCase):
         captured = []
         client = GrokClient('key', model='grok-4.3',
                             direct_reasoning_effort='none', direct_timeout=8,
-                            transport=lambda payload: captured.append(payload) or {"message": "Hello"})
+                            transport=lambda payload: captured.append(payload) or _direct("Hello"))
         self.assertEqual(client.answer_direct('Rally hello', None, self.messages), 'Hello')
         self.assertEqual(captured[0]['model'], 'grok-4.3')
         self.assertEqual(captured[0]['reasoning_effort'], 'none')
+        self.assertEqual(
+            captured[0]['response_format']['json_schema']['name'],
+            'groupconversationdecision')
         with patch('app.agent.httpx.post', side_effect=httpx.ReadTimeout('private text')) as post:
             with self.assertRaises(RuntimeError):
                 GrokClient('key', model='grok-4.3', direct_reasoning_effort='none',
                            direct_timeout=8).answer_direct('Rally hello', None, self.messages)
+        self.assertEqual(post.call_args.kwargs['timeout'], CONVERSATION_DECISION_TIMEOUT)
+        with patch('app.agent.httpx.post', side_effect=httpx.ReadTimeout('private text')) as post:
+            with self.assertRaises(RuntimeError):
+                GrokClient('key', model='grok-4.3', direct_reasoning_effort='none',
+                           direct_timeout=8)._call(DirectAnswer, 'answer', {})
         self.assertEqual(post.call_args.kwargs['timeout'], 8)
 
     def test_direct_answer_uses_group_context_and_validates_text(self):
         calls = []
         def transport(payload):
             calls.append(payload)
-            return {"message": "Friday dinner is planned; the venue is still open."}
+            return _direct("Friday dinner is planned; the venue is still open.")
         client = GrokClient("key", transport=transport)
         facts = PlanFacts(activity="dinner", goal="Friday dinner")
         reply = client.answer_direct("Hey Rally, what's the plan?", facts, self.messages)
@@ -90,10 +106,10 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(calls[0]["response_format"]["type"], "json_schema")
         self.assertIn("Friday dinner", calls[0]["messages"][1]["content"])
         with self.assertRaises(ValueError):
-            GrokClient("key", transport=lambda _: {"message": ""}).answer_direct(
+            GrokClient("key", transport=lambda _: _direct("")).answer_direct(
                 "Rally, update?", facts, self.messages)
         with self.assertRaises(ValueError):
-            GrokClient("key", transport=lambda _: {"message": "   "}).answer_direct(
+            GrokClient("key", transport=lambda _: _direct("   ")).answer_direct(
                 "Rally, update?", facts, self.messages)
 
     def test_extracts_evidence_backed_facts(self):
@@ -154,6 +170,34 @@ class AgentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GrokClient("key", transport=transport).decide(PlanFacts(activity="dinner"), self.messages)
 
+    def test_planning_decide_prompt_helps_the_group_decide(self):
+        seen = []
+        def transport(payload):
+            seen.append(payload)
+            return {"action": "ASK", "reason": "need a time", "tool": "send_message",
+                    "confidence": 0.8, "venue_id": None}
+        GrokClient("key", transport=transport).decide(PlanFacts(activity="dinner"), self.messages)
+        prompt = seen[0]["messages"][0]["content"].casefold()
+        self.assertNotIn("default to wait", prompt)
+        self.assertIn("help the group decide", prompt)
+        self.assertIn("one missing", prompt)
+        self.assertTrue("booking" in prompt or "reservation" in prompt)
+        self.assertTrue("table" in prompt or "calendar" in prompt)
+
+    def test_extract_prompt_believes_chat_when_plan_is_empty(self):
+        seen = []
+        def transport(payload):
+            seen.append(payload)
+            return {"goal": "Friday dinner", "activity": "dinner", "participants": ["nick"],
+                    "date": None, "time": None, "earliest_time": None, "location": None,
+                    "excluded_cuisines": [], "objections": [], "blockers": ["venue missing"],
+                    "evidence": {}, "confidence": 0.7, "abandoned": False}
+        GrokClient("key", transport=transport).extract(self.messages, None)
+        prompt = seen[0]["messages"][0]["content"].casefold()
+        self.assertIn("human messages", prompt)
+        self.assertTrue("empty" in prompt or "stale" in prompt)
+        self.assertIn("source of truth", prompt)
+
     def test_rejects_unresolved_relative_date_as_confirmed_date(self):
         def transport(payload):
             return {"goal": "Dinner", "activity": "dinner", "participants": ["nick"],
@@ -210,8 +254,13 @@ def test_direct_answer_prompt_matches_group_tone():
     from app.models import ChatMessage
     at=datetime.now(timezone.utc)
     seen=[]
-    client=GrokClient('key',transport=lambda payload: seen.append(payload) or {'message':'Sure'})
+    client=GrokClient('key',transport=lambda payload: seen.append(payload) or _direct('Sure'))
     messages=[ChatMessage('c1','chat','friend','yo bro wanna eat lol',at)]
     assert client.answer_direct('Rally, what do you think?',None,messages)=='Sure'
-    assert 'casual' in seen[0]['messages'][0]['content'].lower()
-    assert 'slang' in seen[0]['messages'][0]['content'].lower()
+    prompt = seen[0]['messages'][0]['content'].lower()
+    assert 'casual' in prompt
+    assert 'slang' in prompt
+    assert 'recommend one' in prompt
+    assert 'one missing decision' in prompt
+    assert 'two short sentences' not in prompt
+    assert any(word in prompt for word in ('unhinged', 'feral', 'deranged'))

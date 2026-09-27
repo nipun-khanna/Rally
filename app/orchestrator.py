@@ -1,21 +1,29 @@
 """Connect conversation state, agent decisions, scheduler, and approved actions."""
 
 import logging
+import re
+from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 from datetime import date, datetime, time as clock_time, timedelta, timezone
 from threading import Lock, RLock
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.agent import GrokProviderError
+import time
+
+from app.agent import GroupConversationDecision, GrokProviderError
 from app.availability import AvailabilityWindow, choose_slot, looks_like_availability, parse_availability
 from app.bluebubbles import DeliveryUncertainError
+from app.group_memory import eligible_fact
+from app.group_safety import (forget_phrase, illegal_assistance_request,
+                              parse_forget_command, refusal_text)
 from app.models import ChatMessage, Plan, PlanFacts, Proposal
 from app.message_text import remove_rally_signature
 from app.latency import record_latency
 from app.policy import (eligible_for_intervention, explicitly_addresses_rally,
                         valid_approval, valid_calendar_approval)
 from app.places import PlacesError
+from app.reactions import DONE_REACTION, SEEN_REACTION, completion_reaction
 from app.reservations import create_reservation
 from app.store import Store
 from app.web import should_search_web
@@ -24,6 +32,48 @@ from app.adaptive.handler import should_use_adaptive
 
 
 logger = logging.getLogger(__name__)
+_SHORT_FOLLOWUP = re.compile(
+    r"^\s*(?:what|how|why|where|when|who|which|can|could|do|does|did|is|are|should|would|will)\b",
+    re.I,
+)
+_RECAP_ASK = re.compile(
+    r"\b(recap|what'?s the plan|next step|what people said|what did .+ say)\b",
+    re.I,
+)
+_PICK_ASK = re.compile(r"\b(pick|lock|choose|decide)\b", re.I)
+
+
+def _named_option_pick(request: str, facts) -> str | None:
+    """Return one already-named plan option when the user asks to pick among them."""
+    options = list(getattr(facts, "preferred_cuisines", None) or [])
+    if len(options) < 2 or not request or not _PICK_ASK.search(request):
+        return None
+    mentioned = [item for item in options
+                 if re.search(rf"\b{re.escape(item)}\b", request, re.I)]
+    if len(mentioned) < 2:
+        return None
+    return mentioned[0]
+
+
+def _casual_clock(value: str) -> str:
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", (value or "").strip())
+    if not match:
+        return value
+    hour = int(match.group(1))
+    minute = match.group(2)
+    suffix = "am" if hour < 12 else "pm"
+    hour12 = hour % 12 or 12
+    if minute == "00":
+        return f"{hour12}{suffix}"
+    return f"{hour12}:{minute}{suffix}"
+
+
+def _savage_option_why(picked: str, facts, options) -> str:
+    losers = [item for item in options if item.casefold() != picked.casefold()]
+    loser = losers[0] if losers else "the other option"
+    place = facts.location if facts and facts.location else "this crew"
+    return (f"{picked}. {place} already named the lanes — {loser} is the timid-ass hedge, "
+            f"{picked} slaps harder. lock it and stop splitting the damn vote.")
 
 
 def _log_scheduled_failure(phase: str, exc: Exception):
@@ -49,7 +99,9 @@ class RallyService:
     def __init__(self, store: Store, agent, search_fn, send_fn, stall_minutes: int = 30,
                  extractor=None, calendar_fn=None, allowed_chat_ids: set[str] | frozenset[str] | None = None,
                  portal_handler=None, web_answer_fn=None, adaptive_handler=None,
-                 availability_fn=None, time_zone: str = "America/New_York", reply_agent=None):
+                 availability_fn=None, time_zone: str = "America/New_York", reply_agent=None,
+                 group_memory=None, group_turns=None, react_fn=None, typing_fn=None,
+                 defer_heavy_work: bool = False):
         self.store = store
         self.agent = agent
         self.reply_agent = reply_agent or agent
@@ -64,8 +116,17 @@ class RallyService:
         self.portal_handler = portal_handler
         self.web_answer_fn = web_answer_fn
         self.adaptive_handler = adaptive_handler
+        self.group_memory = group_memory
+        self.group_turns = group_turns
+        self.react_fn = react_fn
+        self.typing_fn = typing_fn
+        self.defer_heavy_work = defer_heavy_work
         self._chat_locks_guard = Lock()
         self._chat_locks = {}
+        self._heavy_inflight: set[str] = set()
+        self._decision_inflight: set[str] = set()
+        self._remembered_ids: set[str] = set()
+        self._pool: ThreadPoolExecutor | None = None
 
     def _chat_lock(self, chat_id: str) -> RLock:
         with self._chat_locks_guard:
@@ -81,6 +142,18 @@ class RallyService:
         return (chat_id not in excluded and
                 (self.allowed_chat_ids is None or chat_id in self.allowed_chat_ids))
 
+    def _is_direct_followup(self, message: ChatMessage, messages: list[ChatMessage]) -> bool:
+        """Allow one brief question after a delivered direct call in this chat."""
+        if len(message.text) > 120 or len(message.text.split()) > 16 or not _SHORT_FOLLOWUP.match(message.text):
+            return False
+        previous = next((item for item in reversed(messages)
+                         if item.message_id != message.message_id and not item.is_from_rally), None)
+        if (previous is None or not explicitly_addresses_rally(previous.text) or
+                message.sent_at < previous.sent_at or
+                message.sent_at - previous.sent_at > timedelta(minutes=5)):
+            return False
+        return self.store.sent_message("direct_reply", previous.message_id)
+
     def receive(self, message: ChatMessage) -> bool:
         if not self._chat_allowed(message.chat_id):
             return False
@@ -88,9 +161,11 @@ class RallyService:
         with self._chat_lock(message.chat_id):
             record_latency("chat_lock_wait", perf_counter() - started)
             try:
-                return self._receive(message)
+                accepted = self._receive(message)
             finally:
                 record_latency("receive_total", perf_counter() - started)
+        self._log_latency("receive", started)
+        return accepted
 
     def recover_pending(self, chat_id: str, *, limit: int = 75) -> int:
         """Re-extract a bounded pending window without replaying replies or actions."""
@@ -119,6 +194,8 @@ class RallyService:
             return False
         if not self.store.add_message(message) and self.store.is_processed(message.message_id):
             return False
+        if message.message_id in self._heavy_inflight:
+            return True
         plan = self.store.get_plan(message.chat_id)
         if (plan and plan.state not in ("READY", "EXECUTING", "DONE", "ABANDONED") and plan.facts.date and
                 self.store.availability_requested(plan.id, plan.version) and
@@ -177,56 +254,65 @@ class RallyService:
                 self.store.mark_processed(message.message_id)
                 return True
         messages = self.store.recent_messages(message.chat_id)
-        if explicitly_addresses_rally(message.text) and not self.store.has_message(
+        direct_call = explicitly_addresses_rally(message.text)
+        followup = (
+            bool(self.group_turns and not direct_call and
+                 self.group_turns.active(message.chat_id, message.sent_at))
+            if self.group_turns is not None else
+            self._is_direct_followup(message, messages)
+        )
+        if (direct_call or followup) and not self.store.has_message(
                 "direct_reply", message.message_id):
-            portal_answer = self.portal_handler(message) if self.portal_handler else None
-            answer = portal_answer
-            if portal_answer is None and self.adaptive_handler and should_use_adaptive(message.text):
-                try:
-                    answer = self.adaptive_handler.answer(message)
-                except Exception as exc:
-                    _log_scheduled_failure("adaptive answer", exc)
-                    answer = "I couldn't finish that request. Please try again later."
-                self._queue_and_send(message.chat_id, f"Rally: {answer}",
-                                     "direct_reply", message.message_id)
-                self.store.mark_processed(message.message_id)
+            if message.message_id in self._decision_inflight:
                 return True
-            if portal_answer is None and self.web_answer_fn and should_search_web(message.text):
-                try:
-                    answer = self.web_answer_fn(message.text, tone=group_tone(messages))
-                except Exception as exc:
-                    _log_scheduled_failure("web answer", exc)
-                    answer = "Web search isn't available right now, so I can't verify current options. Try again later."
-                self._queue_and_send(message.chat_id, f"Rally: {answer}",
-                                     "direct_reply", message.message_id)
-                self.store.mark_processed(message.message_id)
+            if self._handle_addressed_message(
+                    message, plan, messages, direct_call=direct_call, followup=followup):
                 return True
-            if portal_answer is None:
-                started = perf_counter()
-                try:
-                    answer = self.reply_agent.answer_direct(
-                        message.text, plan.facts if plan else None,
-                        self.store.recent_human_messages(message.chat_id, 20))
-                finally:
-                    record_latency("direct_model", perf_counter() - started)
-            self._queue_and_send(message.chat_id, f"Rally: {answer}",
-                                 "direct_reply", message.message_id)
-            if portal_answer is not None:
-                self.store.mark_processed(message.message_id)
-                return True
-        started = perf_counter()
+        self._heavy_inflight.add(message.message_id)
+        if self.defer_heavy_work:
+            self._executor().submit(self._run_heavy, message)
+            return True
+        return self._run_heavy(message)
+
+    def _executor(self) -> ThreadPoolExecutor:
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rally-heavy")
+        return self._pool
+
+    def _run_heavy(self, message: ChatMessage) -> bool:
+        try:
+            return self._extract_and_learn(message)
+        finally:
+            self._heavy_inflight.discard(message.message_id)
+
+    def _extract_and_learn(self, message: ChatMessage) -> bool:
+        already_replied = self.store.has_message("direct_reply", message.message_id)
+        plan = self.store.get_plan(message.chat_id)
+        messages = self.store.recent_messages(message.chat_id)
+        extract_started = time.perf_counter()
         try:
             facts = self.extractor.extract(messages, plan.facts if plan else None)
         except Exception as exc:
+            self._log_latency("extract", extract_started)
+            record_latency("extraction", time.perf_counter() - extract_started)
             self._record_extraction_failure([message.message_id], exc)
+            if already_replied:
+                self.store.mark_processed(message.message_id)
+                return True
+            if self.defer_heavy_work:
+                _log_scheduled_failure("plan extract", exc)
+                return False
             raise
-        finally:
-            record_latency("extraction", perf_counter() - started)
+        self._log_latency("extract", extract_started)
+        record_latency("extraction", time.perf_counter() - extract_started)
         if facts.activity:
             if not plan or plan.state not in ("DONE", "ABANDONED") or (
                     facts.activity, facts.goal, facts.date) != (
                     plan.facts.activity, plan.facts.goal, plan.facts.date):
-                plan = self.store.save_plan(message.chat_id, facts, message.sent_at)
+                self.store.save_plan(message.chat_id, facts, message.sent_at)
+        learn_started = time.perf_counter()
+        self._learn_from_chat(message, messages)
+        self._log_latency("learn", learn_started)
         self.store.mark_processed(message.message_id)
         return True
 
@@ -273,25 +359,17 @@ class RallyService:
         self.deliver_pending()
         return count
 
-    def _tick(self, now: datetime | None = None) -> int:
-        return self.tick(now)
-
     def evaluate(self, chat_id: str, now: datetime | None = None) -> bool:
         """Demo trigger that uses the same eligibility and action path as tick."""
         if not self._chat_allowed(chat_id):
             return False
         with self._chat_lock(chat_id):
-            return self._evaluate(chat_id, now)
-
-    def _evaluate(self, chat_id: str, now: datetime | None = None) -> bool:
-        now = now or datetime.now(timezone.utc)
-        if not self._chat_allowed(chat_id):
-            return False
-        plan = self.store.get_plan(chat_id)
-        if not plan or not eligible_for_intervention(plan, now, self.stall_minutes):
-            return False
-        self._intervene(plan, now)
-        return True
+            now = now or datetime.now(timezone.utc)
+            plan = self.store.get_plan(chat_id)
+            if not plan or not eligible_for_intervention(plan, now, self.stall_minutes):
+                return False
+            self._intervene(plan, now)
+            return True
 
     def _intervene(self, plan: Plan, now: datetime):
         messages = self.store.recent_messages(plan.chat_id)
@@ -572,14 +650,329 @@ class RallyService:
         else:
             self.deliver_pending(plan.chat_id)
 
+    def _handle_addressed_message(self, message: ChatMessage, plan, messages,
+                                  *, direct_call: bool, followup: bool) -> bool:
+        """Reply to a Rally call or open follow-up. True skips plan extraction."""
+        coalesced = bool(self.group_turns and self.group_turns.should_coalesce(
+            message.chat_id, message.text, message.sent_at))
+        if not coalesced:
+            self._react(message, SEEN_REACTION)
+        if direct_call:
+            forget = parse_forget_command(message.text)
+            if forget is not None:
+                self._reply_forget(message, forget)
+                return False
+        if illegal_assistance_request(message.text):
+            self._send_group_reply(message, refusal_text(), allow_flood=True)
+            self._react(message, None)
+            self._note_turn(message)
+            return False
+        if coalesced:
+            self._note_turn(message)
+            return False
+        command = self._priority_command_answer(message, messages)
+        if command is not None:
+            text, allow_flood = command
+            self._send_group_reply(message, text, allow_flood=allow_flood)
+            self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))
+            self.store.mark_processed(message.message_id)
+            return True
+        memory_context = self.group_memory.prompt_context(message.chat_id, limit=12) if self.group_memory else ""
+        if direct_call and self._has_local_reply(message, plan):
+            text = self._local_decision_reply(
+                plan, messages, memory_context, request=message.text)
+            self._send_group_reply(message, text, allow_flood=False)
+            self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))
+            self._note_turn(message)
+            return False
+        self._decision_inflight.add(message.message_id)
+        started = time.perf_counter()
+        self._set_typing(message, True)
+        try:
+            try:
+                decision = self._call_without_chat_lock(
+                    message.chat_id,
+                    lambda: self._conversation_decision(
+                        message, plan, messages, followup and not direct_call),
+                )
+            except Exception as exc:
+                self._log_latency("decision", started)
+                record_latency("direct_model", time.perf_counter() - started)
+                _log_scheduled_failure("group conversation", exc)
+                if self.store.has_message("direct_reply", message.message_id):
+                    return False
+                if direct_call:
+                    text = self._local_decision_reply(
+                        plan, messages, memory_context, request=message.text)
+                    self._send_group_reply(message, text, allow_flood=True)
+                    self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))
+                elif self.group_turns:
+                    self.group_turns.close(message.chat_id)
+                    self._react(message, None)
+                return False
+            self._log_latency("decision", started)
+            record_latency("direct_model", time.perf_counter() - started)
+            if self.store.has_message("direct_reply", message.message_id):
+                return False
+            if followup and not direct_call and not decision.relevant:
+                if self.group_turns:
+                    self.group_turns.close(message.chat_id)
+                self._react(message, None)
+                return False
+            refuse = decision.safety == "refuse"
+            text = (decision.message or refusal_text()) if refuse else decision.message
+            if decision.relevant:
+                if text:
+                    self._send_group_reply(message, text, allow_flood=refuse)
+                delivered = self.store.sent_message("direct_reply", message.message_id)
+                queued = self.store.has_message("direct_reply", message.message_id)
+                if delivered and not refuse:
+                    self._react(message, completion_reaction(decision.reaction) or DONE_REACTION)
+                    self._remember(message, decision.memory_candidates)
+                elif refuse or not queued:
+                    self._react(message, None)
+                self._note_turn(message)
+            return False
+        finally:
+            self._set_typing(message, False)
+            self._decision_inflight.discard(message.message_id)
+
+    def _priority_command_answer(self, message: ChatMessage, messages) -> tuple[str, bool] | None:
+        if self.portal_handler:
+            answer = self.portal_handler(message)
+            if answer is not None:
+                return answer, True
+        if self.adaptive_handler and should_use_adaptive(message.text):
+            try:
+                return self.adaptive_handler.answer(message), False
+            except Exception as exc:
+                _log_scheduled_failure("adaptive answer", exc)
+                return "couldn't finish that shit. try me again in a minute.", False
+        if self.web_answer_fn and should_search_web(message.text):
+            try:
+                return self.web_answer_fn(message.text, tone=group_tone(messages)), False
+            except Exception as exc:
+                _log_scheduled_failure("web answer", exc)
+                return ("web search is dead right now so i can't verify shit. try later."), False
+        return None
+
+    def _call_without_chat_lock(self, chat_id: str, fn):
+        """Release the per-chat lock around a provider call, then re-acquire."""
+        lock = self._chat_lock(chat_id)
+        lock.release()
+        try:
+            return fn()
+        finally:
+            lock.acquire()
+
+    def _conversation_decision(self, message, plan, messages, followup: bool):
+        memory_context = self.group_memory.prompt_context(message.chat_id, limit=12) if self.group_memory else ""
+        facts = plan.facts if plan else None
+        proposal = self._proposal_context(plan)
+        speaker = self.reply_agent or self.agent
+        if hasattr(speaker, "decide_conversation"):
+            return speaker.decide_conversation(
+                message.text, facts, messages, memory_context=memory_context,
+                followup=followup, proposal=proposal)
+        thread = self.store.recent_human_messages(message.chat_id, 20)
+        return GroupConversationDecision(
+            relevant=True, safety="ok",
+            message=speaker.answer_direct(message.text, facts, thread),
+        )
+
+    def _has_local_reply(self, message: ChatMessage, plan) -> bool:
+        if _RECAP_ASK.search(message.text or ""):
+            return True
+        facts = plan.facts if plan else None
+        return _named_option_pick(message.text or "", facts) is not None
+
+    def _local_decision_reply(self, plan, messages, memory_context: str = "",
+                             request: str = "") -> str:
+        facts = plan.facts if plan else None
+        picked = _named_option_pick(request, facts)
+        if picked:
+            options = list(getattr(facts, "preferred_cuisines", None) or [])
+            return _savage_option_why(picked, facts, options)
+        parts = []
+        if facts and facts.activity:
+            parts.append(facts.activity)
+        if facts and facts.date:
+            parts.append(facts.date)
+        if facts and facts.time:
+            parts.append(f"at {_casual_clock(facts.time)}")
+        if facts and facts.party_size:
+            parts.append(f"for {facts.party_size}")
+        if facts and facts.location:
+            parts.append(f"near {facts.location}")
+        if facts and facts.preferred_cuisines:
+            parts.append(" or ".join(facts.preferred_cuisines))
+        if facts and facts.blockers:
+            parts.append(f"({facts.blockers[0]})")
+        if not parts:
+            for line in (memory_context or "").splitlines():
+                fact = line.lstrip("- ").strip()
+                if fact:
+                    parts.append(fact)
+                if len(parts) >= 2:
+                    break
+        if not parts:
+            return ("nothing's locked, you're just vibing in the damn void. "
+                    "spit the one call — time, place, or who — and i'll ride with it.")
+        if facts and facts.location and not facts.time:
+            nxt = "lock a time"
+        elif facts and facts.time and not facts.location:
+            nxt = "pick a damn place"
+        else:
+            nxt = "pick one walking-distance spot"
+        return (f"locked-in chaos: {', '.join(parts)}. y'all are stalling like cowards — "
+                f"{nxt} or i'm calling this shit mid in the thread. "
+                "i still won't fake a damn restaurant.")
+
+    def _proposal_context(self, plan) -> dict | None:
+        if plan is None:
+            return None
+        saved = None
+        if plan.pending_proposal_id:
+            saved = self.store.get_proposal(plan.pending_proposal_id)
+        if saved is None:
+            saved = self.store.latest_proposal(plan.id)
+        if saved is None:
+            return None
+        return {
+            "venue_name": saved.venue_name,
+            "venue_address": saved.venue_address,
+            "date": saved.date,
+            "time": saved.time,
+            "party_size": saved.party_size,
+            "status": saved.status,
+        }
+
+    def _reply_forget(self, message: ChatMessage, target: str):
+        if self.group_memory is None:
+            text = "i don't have shit saved for this group."
+        elif target == "":
+            removed = self.group_memory.forget(message.chat_id)
+            text = ("fine, i forgot that group crap."
+                    if removed else "i don't have shit saved for this group.")
+        else:
+            removed = self.group_memory.forget(message.chat_id, target)
+            if not removed:
+                phrase = forget_phrase(message.text)
+                if phrase and phrase.casefold() != target:
+                    removed = self.group_memory.forget_fact(message.chat_id, phrase)
+            text = "okay, i forgot that." if removed else "i don't have that saved."
+        self._send_group_reply(message, text, allow_flood=True)
+        self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))
+        self._note_turn(message)
+
+    def _send_group_reply(self, message: ChatMessage, text: str, *, allow_flood: bool) -> bool:
+        if not text or not text.strip():
+            return False
+        if (not allow_flood and self.group_turns and
+                not self.group_turns.allow_reply(message.chat_id, message.sent_at)):
+            return False
+        self._queue_and_send(message.chat_id, f"Rally: {text}", "direct_reply", message.message_id)
+        outbound_id = f"rally-out:{message.message_id}"
+        self.store.add_message(ChatMessage(
+            outbound_id, message.chat_id, "Rally", text, datetime.now(timezone.utc), True))
+        self.store.mark_processed(outbound_id)
+        return True
+
+    def _note_turn(self, message: ChatMessage):
+        if self.group_turns:
+            self.group_turns.mark_relevant(
+                message.chat_id, message.message_id, message.sent_at, message.text)
+
+    def _finish_reaction(self, message: ChatMessage, *, delivered: bool):
+        if delivered:
+            self._react(message, DONE_REACTION)
+        else:
+            self._react(message, None)
+
+    def _side_effect(self, fn):
+        if self.defer_heavy_work:
+            self._executor().submit(fn)
+            return
+        fn()
+
+    def _react(self, message: ChatMessage, reaction: str | None):
+        if not self.react_fn:
+            return
+        current = self.group_turns.last_reaction(message.message_id) if self.group_turns else None
+        payload = reaction
+        if reaction is None:
+            if not current:
+                return
+            payload = current if current.startswith("-") else f"-{current}"
+        if payload == current:
+            return
+        if self.group_turns:
+            self.group_turns.remember_reaction(message.message_id, reaction)
+
+        def run():
+            try:
+                self.react_fn(message.chat_id, message.message_id, payload)
+            except Exception as exc:
+                _log_scheduled_failure("reaction", exc)
+
+        self._side_effect(run)
+
+    def _set_typing(self, message: ChatMessage, typing: bool):
+        if not self.typing_fn:
+            return
+
+        def run():
+            try:
+                self.typing_fn(message.chat_id, typing)
+            except Exception as exc:
+                _log_scheduled_failure("typing", exc)
+
+        self._side_effect(run)
+
+    def _learn_from_chat(self, message: ChatMessage, messages):
+        if (not self.group_memory or message.message_id in self._remembered_ids
+                or illegal_assistance_request(message.text)
+                or parse_forget_command(message.text) is not None
+                or not hasattr(self.agent, "learn_memory")):
+            return
+        memory_context = self.group_memory.prompt_context(message.chat_id, limit=12)
+        try:
+            candidates = self.agent.learn_memory(
+                message.text, messages, memory_context=memory_context)
+        except Exception as exc:
+            _log_scheduled_failure("memory learn", exc)
+            return
+        self._remember(message, candidates)
+
+    def _remember(self, message: ChatMessage, candidates):
+        if not self.group_memory or not candidates:
+            return
+        saved = False
+        for item in candidates:
+            key = getattr(item, "key", None)
+            fact = getattr(item, "fact", None)
+            if not isinstance(key, str) or not isinstance(fact, str) or not eligible_fact(fact):
+                continue
+            try:
+                if self.group_memory.upsert_fact(
+                        message.chat_id, key, fact, message.message_id, message.sent_at):
+                    saved = True
+            except ValueError:
+                continue
+        if saved:
+            self._remembered_ids.add(message.message_id)
+
+    def _log_latency(self, stage: str, started: float):
+        elapsed_ms = 0 if not started else int((time.perf_counter() - started) * 1000)
+        logger.warning("group_conversation stage=%s elapsed_ms=%s", stage, elapsed_ms)
+
     def _queue_and_send(self, chat_id: str, text: str, kind: str, ref_id: str):
+        started = time.perf_counter()
         self.store.queue_message(chat_id, remove_rally_signature(text), kind, ref_id)
         self.deliver_pending(chat_id)
+        self._log_latency("send", started)
 
     def deliver_pending(self, chat_id: str | None = None):
-        self._deliver_pending(chat_id)
-
-    def _deliver_pending(self, chat_id: str | None = None):
         for item in self.store.pending_messages():
             current_chat_id = item["chat_id"]
             if (chat_id is not None and current_chat_id != chat_id) or not self._chat_allowed(current_chat_id):

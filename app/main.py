@@ -2,13 +2,14 @@
 
 import asyncio
 import hmac
+import ipaddress
 import logging
 from time import perf_counter
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Cookie, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
 from app.agent import GrokProviderError
@@ -58,7 +59,9 @@ def create_app(service=None, *, webhook_token: str | None = None,
                history_enabled: bool = True, relationship_service=None,
                admin_token: str | None = None, voice_registry=None,
                voice_model: str | None = None, xai_api_key: str | None = None,
-               voice_owner: str | None = None) -> FastAPI:
+               voice_owner: str | None = None, browser_runtime=None,
+               browser_inbound=None, browser_admin_token: str | None = None,
+               browser_enabled: bool = False) -> FastAPI:
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -97,6 +100,21 @@ def create_app(service=None, *, webhook_token: str | None = None,
                 plan_store=service.store, service=service,
                 action_store=VoiceActionStore(service.store.path),
                 bluebubbles_client=voice_bluebubbles_client)
+        if settings.browser_enabled:
+            from app.browser.agent import BrowserTaskService
+            from app.browser.handler import BrowserInbound
+            from app.browser.runtime import BrowserRuntime
+            from app.browser.store import BrowserStore
+            browser_enabled = True
+            browser_admin_token = settings.browser_admin_token
+            browser_runtime = BrowserRuntime(
+                settings.browser_profile_path, settings.browser_download_path,
+                None, settings.browser_max_text_chars)
+            browser_inbound = BrowserInbound(
+                settings.browser_owner_chat_id, settings.browser_owner_sender_id,
+                BrowserTaskService(browser_runtime, BrowserStore(settings.database_path),
+                                   service.agent._call, settings),
+                service.send_fn)
     else:
         publish_enabled = False
     tick_seconds = tick_seconds or 60
@@ -107,8 +125,18 @@ def create_app(service=None, *, webhook_token: str | None = None,
     if not history_enabled:
         for chat_id in allowed_chats:
             portal_store.update_settings(chat_id, sections={"history": False, "media": False, "analytics": False})
-    if app_url:
-        service.portal_handler = lambda message: portal_reply(message, portal_store, app_url, history_enabled=history_enabled)
+    owner = voice_owner or 'local-imessage-account'
+
+    def command_reply(message):
+        from app.group_admin_commands import admin_dashboard_reply
+        admin = admin_dashboard_reply(message, portal_store, app_url)
+        if admin is not None:
+            return admin
+        if not app_url:
+            return None
+        return portal_reply(message, portal_store, app_url, history_enabled=history_enabled)
+
+    service.portal_handler = command_reply
 
     def personal_chat_ids():
         if not relationship_service:
@@ -164,9 +192,22 @@ def create_app(service=None, *, webhook_token: str | None = None,
     async def lifespan(app: FastAPI):
         task = asyncio.create_task(periodic()) if schedule else None
         initial_import = asyncio.create_task(asyncio.to_thread(import_one_page)) if schedule else None
+        proxy = None
+        from app.browser.runtime import BrowserRuntime
+        if browser_enabled and isinstance(browser_runtime, BrowserRuntime):
+            from app.browser.egress import PublicEgressProxy
+            proxy = PublicEgressProxy()
+            browser_runtime.proxy_url = await proxy.start()
         try:
             yield
         finally:
+            if browser_runtime is not None:
+                try:
+                    browser_runtime.stop()
+                except Exception:
+                    pass
+            if proxy is not None:
+                await proxy.close()
             if initial_import:
                 initial_import.cancel()
             if task:
@@ -192,9 +233,44 @@ def create_app(service=None, *, webhook_token: str | None = None,
     def health():
         return {"status": "ok"}
 
+    def authorize_browser_admin(request: Request, candidate: str | None):
+        if not browser_enabled or browser_runtime is None:
+            raise HTTPException(404, "Browser is not enabled")
+        host = request.client.host if request.client else ""
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                raise HTTPException(403, "Forbidden")
+        except ValueError:
+            raise HTTPException(403, "Forbidden")
+        if (not browser_admin_token or not candidate or
+                not hmac.compare_digest(candidate, browser_admin_token)):
+            raise HTTPException(403, "Forbidden")
+
+    @app.get("/browser/status")
+    def browser_status(request: Request, x_rally_admin_token: str | None = Header(default=None)):
+        authorize_browser_admin(request, x_rally_admin_token)
+        return browser_runtime.status()
+
+    @app.post("/browser/start")
+    def browser_start(request: Request, x_rally_admin_token: str | None = Header(default=None)):
+        authorize_browser_admin(request, x_rally_admin_token)
+        try:
+            return browser_runtime.start()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from None
+
+    @app.post("/browser/stop")
+    def browser_stop(request: Request, x_rally_admin_token: str | None = Header(default=None)):
+        authorize_browser_admin(request, x_rally_admin_token)
+        return browser_runtime.stop()
+
     @app.post("/webhooks/bluebubbles")
     def webhook(payload: dict, token: str | None = None):
         authorize(token)
+        if browser_inbound is not None:
+            handled = browser_inbound.try_receive(payload)
+            if handled is not None:
+                return {"accepted": handled}
         if relationship_service:
             private_destinations = {c['destination'] for c in relationship_service.store.configs()}
             incoming_private = normalize_webhook(payload, allowed_direct_chat_ids=private_destinations)
@@ -252,9 +328,19 @@ def create_app(service=None, *, webhook_token: str | None = None,
         return HTMLResponse(render_debug_view(plan, proposal, reservation,
                                              messages=service.store.recent_messages(chat_id)))
 
-    def authorize_admin(candidate: str | None):
-        if not admin_token or not candidate or not hmac.compare_digest(candidate, admin_token):
+    def authorize_admin(candidate: str | None, cookie: str | None = None):
+        if not admin_token:
             raise HTTPException(403, 'Admin token required')
+        for value in (candidate, cookie):
+            if value and hmac.compare_digest(value, admin_token):
+                return
+        raise HTTPException(403, 'Admin token required')
+
+    def remember_admin(response: HTMLResponse, presented: str | None):
+        if admin_token and presented and hmac.compare_digest(presented, admin_token):
+            response.set_cookie('rally_admin', admin_token, httponly=True, samesite='strict',
+                                path='/admin', max_age=12 * 60 * 60)
+        return response
 
     def _dashboard_grouped():
         if relationship_service is None:
@@ -306,6 +392,34 @@ def create_app(service=None, *, webhook_token: str | None = None,
             return {'result': voice_registry.call(name, args)}
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
+
+    @app.get('/admin/groups', response_class=HTMLResponse)
+    def admin_group_picker(token: str | None = None,
+                           x_rally_admin_token: str | None = Header(default=None),
+                           rally_admin: str | None = Cookie(default=None)):
+        presented = token or x_rally_admin_token
+        authorize_admin(presented, rally_admin)
+        from app.group_admin import list_admin_groups
+        from app.group_admin_view import render_group_picker
+        page = render_group_picker(
+            list_admin_groups(service, portal_store, excluded_chat_ids=personal_chat_ids()))
+        return remember_admin(HTMLResponse(page), presented)
+
+    @app.get('/admin/groups/{chat_id:path}', response_class=HTMLResponse)
+    def admin_group_detail(chat_id: str, token: str | None = None,
+                           x_rally_admin_token: str | None = Header(default=None),
+                           rally_admin: str | None = Cookie(default=None)):
+        presented = token or x_rally_admin_token
+        authorize_admin(presented, rally_admin)
+        from app.group_admin import build_group_admin
+        from app.group_admin_view import render_group_admin
+        data = build_group_admin(
+            service, chat_id, portal_store=portal_store,
+            excluded_chat_ids=personal_chat_ids(),
+            identity={'webhook_token': webhook_token, 'admin_token': admin_token})
+        if data is None:
+            raise HTTPException(404, 'Group not found')
+        return remember_admin(HTMLResponse(render_group_admin(data)), presented)
 
     @app.get('/adaptive/admin/requests/{request_id}')
     def adaptive_request(request_id: str, include_source: bool = False,

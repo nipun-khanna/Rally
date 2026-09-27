@@ -9,6 +9,7 @@ def msg(text, index=0):
 
 def test_casual_and_formal_group_tone():
     assert group_tone([msg('yo wanna grab food lol'), msg('yeah bro lets go', 1)]) == 'casual'
+    assert group_tone([msg('this shit is so fucking late wtf'), msg('lmao fuck it ngl', 1)]) == 'casual'
     assert group_tone([msg('Good evening, could we please confirm our reservation?'),
                        msg('Certainly. Thank you for coordinating.', 1)]) == 'formal'
     assert group_tone([msg('Dinner Friday?')]) == 'neutral'

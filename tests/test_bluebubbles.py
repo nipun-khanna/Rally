@@ -4,7 +4,13 @@ from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
 
-from app.bluebubbles import DeliveryUncertainError, IncomingMessage, normalize_webhook, send_message
+from app.bluebubbles import (
+    DeliveryUncertainError,
+    IncomingMessage,
+    is_private_direct_chat,
+    normalize_webhook,
+    send_message,
+)
 
 
 def group_event():
@@ -39,6 +45,17 @@ class FakeResponse:
 
 
 class BlueBubblesTests(unittest.TestCase):
+    def test_private_direct_chat_accepts_service_dash_id(self):
+        self.assertTrue(is_private_direct_chat("iMessage;-;+15555550100"))
+        self.assertTrue(is_private_direct_chat("any;-;+15555550100"))
+        self.assertTrue(is_private_direct_chat("SMS;-;+15555550100"))
+        self.assertTrue(is_private_direct_chat("other;-;person"))
+        self.assertFalse(is_private_direct_chat("iMessage;+;group"))
+        self.assertFalse(is_private_direct_chat("any;+;chat123"))
+        self.assertFalse(is_private_direct_chat("iMessage;-;"))
+        self.assertFalse(is_private_direct_chat(";-;person"))
+        self.assertFalse(is_private_direct_chat("any"))
+
     def test_normalizes_group_message(self):
         message = normalize_webhook(group_event())
         self.assertIsInstance(message, IncomingMessage)

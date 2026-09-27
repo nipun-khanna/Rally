@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Mapping
 
 from app.agent import GrokClient
-from app.bluebubbles import send_message
+from app.bluebubbles import is_private_direct_chat, send_message
+from app.group_memory import GroupMemoryStore
+from app.group_turns import GroupTurnStore
+from app.message_text import add_rally_signature
+from app.reactions import send_reaction, set_typing
 from app.calendar import (CalendarApproval, CalendarCredentials, CalendarError,
                           create_calendar_event, get_calendar_busy)
 from app.muse import MuseExtractor
@@ -65,6 +69,14 @@ class Settings:
     voice_enabled: bool = False
     voice_owner: str = "local-imessage-account"
     voice_model: str = "grok-voice-latest"
+    browser_enabled: bool = False
+    browser_owner_chat_id: str = ""
+    browser_owner_sender_id: str = ""
+    browser_admin_token: str = ""
+    browser_profile_path: Path = Path("data/browser/profile")
+    browser_download_path: Path = Path("data/browser/downloads")
+    browser_max_actions: int = 6
+    browser_max_text_chars: int = 6000
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -111,6 +123,29 @@ class Settings:
         xai_api_key = source.get("RALLY_XAI_API_KEY", "")
         if voice_enabled and not (admin_token and xai_api_key):
             raise ValueError("Voice is enabled without an admin token and xAI API key")
+        browser_enabled = source.get("RALLY_BROWSER_ENABLED", "0") == "1"
+        browser_owner_chat_id = source.get("RALLY_BROWSER_OWNER_CHAT_ID", "").strip()
+        browser_owner_sender_id = source.get("RALLY_BROWSER_OWNER_SENDER_ID", "").strip()
+        browser_admin_token = source.get("RALLY_BROWSER_ADMIN_TOKEN", "")
+        browser_profile_path = Path(source.get("RALLY_BROWSER_PROFILE_PATH", "data/browser/profile"))
+        browser_download_path = Path(source.get("RALLY_BROWSER_DOWNLOAD_PATH", "data/browser/downloads"))
+        browser_max_actions = int(source.get("RALLY_BROWSER_MAX_ACTIONS", "6"))
+        browser_max_text_chars = int(source.get("RALLY_BROWSER_MAX_TEXT_CHARS", "6000"))
+        if browser_enabled:
+            if not is_private_direct_chat(browser_owner_chat_id):
+                raise ValueError("Browser owner must be a private {service};-;{id} chat")
+            if not browser_owner_sender_id:
+                raise ValueError("Browser owner sender ID is required")
+            browser_root = Path("data/browser").absolute()
+            if browser_root.resolve() != browser_root:
+                raise ValueError("Browser data directory must not be a symlink")
+            for path in (browser_profile_path, browser_download_path):
+                if not path.resolve().is_relative_to(browser_root) or path.resolve() == browser_root:
+                    raise ValueError("Browser paths must stay under data/browser/")
+            if not 1 <= browser_max_actions <= 12 or not 1000 <= browser_max_text_chars <= 12000:
+                raise ValueError("Invalid browser action or observation limit")
+            if browser_admin_token and (len(browser_admin_token) < 32 or browser_admin_token == admin_token):
+                raise ValueError("Browser admin token must be separate and at least 32 characters")
         return cls(
             database_path=Path(source.get("RALLY_DATABASE_PATH", "data/rally.sqlite3")),
             webhook_token=source.get("RALLY_WEBHOOK_TOKEN", ""),
@@ -153,6 +188,14 @@ class Settings:
             voice_enabled=voice_enabled,
             voice_owner=source.get("RALLY_VOICE_OWNER", "local-imessage-account"),
             voice_model=source.get("RALLY_VOICE_MODEL", "grok-voice-latest"),
+            browser_enabled=browser_enabled,
+            browser_owner_chat_id=browser_owner_chat_id,
+            browser_owner_sender_id=browser_owner_sender_id,
+            browser_admin_token=browser_admin_token,
+            browser_profile_path=browser_profile_path,
+            browser_download_path=browser_download_path,
+            browser_max_actions=browser_max_actions,
+            browser_max_text_chars=browser_max_text_chars,
         )
 
 
@@ -201,7 +244,8 @@ def build_service(settings: Settings) -> RallyService:
     def send(chat_id: str, text: str):
         if not settings.bluebubbles_url or not settings.bluebubbles_password:
             raise RuntimeError("BlueBubbles is not configured")
-        return send_message(settings.bluebubbles_url, settings.bluebubbles_password, chat_id, text)
+        return send_message(settings.bluebubbles_url, settings.bluebubbles_password, chat_id,
+                            add_rally_signature(text))
 
     calendar_fn = None
     availability_fn = None
@@ -257,9 +301,24 @@ def build_service(settings: Settings) -> RallyService:
             build_default_registry(settings.allowed_chat_ids, plan_store=store,
                                    web_answer_fn=web_answer_fn), proposal_generator)
 
+    def react(chat_id: str, message_id: str, reaction: str):
+        if not settings.bluebubbles_url or not settings.bluebubbles_password:
+            return None
+        return send_reaction(settings.bluebubbles_url, settings.bluebubbles_password,
+                             chat_id, message_id, reaction, wait_for_helper=False)
+
+    def typing(chat_id: str, on: bool):
+        if not settings.bluebubbles_url or not settings.bluebubbles_password:
+            return None
+        return set_typing(settings.bluebubbles_url, settings.bluebubbles_password, chat_id, on,
+                          wait_for_helper=False)
+
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
                         reply_agent=reply_agent,
                         allowed_chat_ids=settings.allowed_chat_ids,
                         web_answer_fn=web_answer_fn, adaptive_handler=adaptive_handler,
-                        availability_fn=availability_fn, time_zone=settings.time_zone)
+                        availability_fn=availability_fn, time_zone=settings.time_zone,
+                        group_memory=GroupMemoryStore(settings.database_path),
+                        group_turns=GroupTurnStore(settings.database_path),
+                        react_fn=react, typing_fn=typing, defer_heavy_work=True)

@@ -2,7 +2,12 @@
 
 import re
 
-_CASUAL = re.compile(r'\b(yo|bro|lol|lmao|nah|yup|wanna|gonna|fr|rn|idk|wtf|shit|fuck)\b', re.I)
+_CASUAL = re.compile(
+    r'\b(yo|bro|lol|lmao|lmfao|nah|yup|wanna|gonna|fr|rn|idk|wtf|shit|fuck|'
+    r'ngl|lowkey|mid|dude|ass|bitch|damn|hell|tbh|smh|bet|cap|sus|down bad|'
+    r'omfg|bruh|deadass)\b',
+    re.I,
+)
 _FORMAL = re.compile(r'\b(please|thank you|certainly|sincerely|regards|good evening|good morning|would you|could we)\b', re.I)
 
 
