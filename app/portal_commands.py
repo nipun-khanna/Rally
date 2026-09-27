@@ -5,14 +5,14 @@ import re
 from app.group_admin_commands import hosted_page_reply
 
 
-_SECTION = r"history|messages|media|photos|attachments|analytics|stats|plans|members|activity"
-_ALIASES = {"messages": "history", "photos": "media", "attachments": "media", "stats": "analytics"}
+_SECTION = r"history|messages|media|photos|attachments|analytics|stats|plans|members|activity|knowledge|kb"
+_ALIASES = {"messages": "history", "photos": "media", "attachments": "media", "stats": "analytics", "kb": "knowledge"}
 
 
 def portal_reply(message, portal_store, app_url: str, *, history_enabled: bool = True) -> str | None:
     """Return a reply for an addressed portal command, or None for normal Rally work."""
     text = message.text.strip()
-    if not re.search(r"\b(portal|page|site|history|messages|media|photos|attachments|analytics|stats|plans|members|activity)\b", text, re.I):
+    if not re.search(r"\b(portal|page|site|history|messages|media|photos|attachments|analytics|stats|plans|members|activity|knowledge|kb)\b", text, re.I):
         return None
     chat_id = message.chat_id
     match = re.search(rf"\b(hide|show|turn on|turn off|enable|disable)\s+(?:the\s+)?({_SECTION})\b", text, re.I)

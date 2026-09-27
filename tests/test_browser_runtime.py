@@ -31,6 +31,7 @@ class ScriptedDriver:
 
     def stop(self):
         self.closed = True
+        self.current = {}
 
     def observe(self, chat_id, authenticated):
         page = self.current.get(chat_id, {"url": "", "title": "", "text": "", "controls": ()})

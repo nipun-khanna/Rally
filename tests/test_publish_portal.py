@@ -14,6 +14,28 @@ def test_publication_requires_explicit_enablement(tmp_path, monkeypatch):
         publish(settings, output_dir=tmp_path / "portal_build")
 
 
+def test_publication_publishes_ready_groups_even_if_another_is_still_importing(tmp_path, monkeypatch):
+    monkeypatch.setenv("RALLY_PORTAL_PUBLISH_APPROVED", "1")
+    db = tmp_path / "rally.sqlite3"
+    Store(db)
+    portal = PortalStore(db)
+    ready, pending = "iMessage;+;ready", "iMessage;+;pending"
+    ready_id = portal.ensure_group(ready)
+    portal.ensure_group(pending)
+    portal.upsert_messages(ready, [{"message_id": "m1", "sender_id": "a", "text": "Dinner?",
+                                    "sent_at": "2026-09-25"}])
+    portal.set_import_state(ready, cursor="1", status="complete")
+    portal.set_import_state(pending, cursor="0", status="pending")
+    settings = Settings.from_env({"RALLY_DATABASE_PATH": str(db),
+                                  "RALLY_ALLOWED_CHAT_GUIDS": f"{ready},{pending}"})
+    monkeypatch.setattr("scripts.publish_portal.subprocess.run",
+                        lambda command, **kw: SimpleNamespace(
+                            stdout="https://rallyplans-one.vercel.app" if command[1] == "deploy" else ""))
+    output = tmp_path / "portal_build"
+    assert publish(settings, output_dir=output) == "published"
+    assert (output / ready_id / "index.html").exists()
+
+
 def test_publication_skips_unchanged_and_retires_previous_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("RALLY_PORTAL_PUBLISH_APPROVED", "1")
     db = tmp_path / "rally.sqlite3"
@@ -42,3 +64,28 @@ def test_publication_skips_unchanged_and_retires_previous_snapshot(tmp_path, mon
     assert publish(settings, output_dir=output) == "published"
     assert [command[1] for command in calls] == ["link", "deploy", "link", "deploy", "rm"]
     assert calls[-1][2] == "https://rallyplans-one.vercel.app"
+
+
+def test_concurrent_publish_calls_do_not_race_on_the_output_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("RALLY_PORTAL_PUBLISH_APPROVED", "1")
+    db = tmp_path / "rally.sqlite3"
+    Store(db)
+    portal = PortalStore(db)
+    chat = "iMessage;+;group"
+    portal.ensure_group(chat)
+    portal.upsert_messages(chat, [{"message_id": "m1", "sender_id": "a", "text": "Dinner?",
+                                  "sent_at": "2026-09-25"}])
+    portal.set_import_state(chat, cursor="1", status="complete")
+    settings = Settings.from_env({"RALLY_DATABASE_PATH": str(db),
+                                  "RALLY_ALLOWED_CHAT_GUIDS": chat})
+    monkeypatch.setattr("scripts.publish_portal.subprocess.run",
+                        lambda command, **kw: SimpleNamespace(
+                            stdout="https://rallyplans-one.vercel.app" if command[1] == "deploy" else ""))
+    from scripts import publish_portal
+    output = tmp_path / "portal_build"
+    assert publish_portal._publish_lock.acquire(blocking=False)
+    try:
+        assert publish(settings, output_dir=output) == "already publishing"
+    finally:
+        publish_portal._publish_lock.release()
+    assert publish(settings, output_dir=output) == "published"

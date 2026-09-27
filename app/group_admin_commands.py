@@ -20,7 +20,7 @@ def hosted_page_reply(url: str, *, admin: bool = False) -> str:
     lead = f"here's the group page: {url}"
     if admin:
         return (f"{lead} the admin desk stays on the Mac that runs Rally — "
-                f"i will not drop the token in this chat.")
+                f"i won't drop the token in this chat.")
     return lead
 
 

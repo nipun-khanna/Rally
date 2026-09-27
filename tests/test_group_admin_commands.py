@@ -43,7 +43,7 @@ def test_page_link_command_still_returns_public_archive_not_admin_desk():
     reply = portal_reply(SimpleNamespace(text="Hey Rally, send our page link", chat_id=GROUP),
                          Store(), APP)
     assert f"{APP}/public-id" in reply
-    assert "page" in reply.lower()
+    assert "group page" in reply.lower(), reply
     assert admin_dashboard_reply(message("Hey Rally, send our page link"), Portal(), APP) is None
 
 
@@ -52,7 +52,7 @@ def test_dashboard_phrases_send_hosted_archive_not_local_admin_or_chat_guid():
                  "Rally dashboard"):
         reply, portal = handle(text)
         assert f"{APP}/{PUBLIC}" in reply, text
-        assert "page" in reply.lower()
+        assert "group page" in reply.lower(), reply
         assert portal.seen == [GROUP]
         assert "127.0.0.1" not in reply
         assert "admin/groups" not in reply
@@ -64,7 +64,7 @@ def test_dashboard_phrases_send_hosted_archive_not_local_admin_or_chat_guid():
 def test_admin_dashboard_mentions_mac_desk_but_link_is_vercel():
     reply, _ = handle("Rally, admin dashboard")
     assert f"{APP}/{PUBLIC}" in reply
-    assert "page" in reply.lower()
+    assert "group page" in reply.lower(), reply
     assert "Mac" in reply
     assert "token" in reply.lower()
     assert "127.0.0.1" not in reply
@@ -75,13 +75,14 @@ def test_admin_dashboard_mentions_mac_desk_but_link_is_vercel():
 def test_members_get_the_same_hosted_link_without_a_token():
     reply, _ = handle("Rally, send the dashboard", sender="member")
     assert f"{APP}/{PUBLIC}" in reply
-    assert "page" in reply.lower()
+    assert "group page" in reply.lower(), reply
     assert "token=" not in reply
 
 
 def test_missing_app_url_does_not_text_localhost():
     reply, portal = handle("Rally, send the dashboard", app_url="")
     assert reply is not None
+    assert reply.strip() != "", reply
     assert "page" in reply.lower()
     assert "127.0.0.1" not in reply
     assert "http" not in reply.lower()

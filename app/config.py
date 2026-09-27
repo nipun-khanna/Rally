@@ -1,6 +1,9 @@
 """Environment configuration and concrete Rally service wiring."""
 
+import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
@@ -79,6 +82,7 @@ class Settings:
     browser_download_path: Path = Path("data/browser/downloads")
     browser_max_actions: int = 6
     browser_max_text_chars: int = 6000
+    owner_display_name: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, *,
@@ -199,6 +203,7 @@ class Settings:
             browser_download_path=browser_download_path,
             browser_max_actions=browser_max_actions,
             browser_max_text_chars=browser_max_text_chars,
+            owner_display_name=source.get("RALLY_OWNER_DISPLAY_NAME", "").strip(),
         )
 
 
@@ -345,6 +350,18 @@ def build_service(settings: Settings) -> RallyService:
                     messages.append(parsed)
             return messages
 
+    from app.knowledge import DebouncedKnowledgeRunner, KnowledgeBuilder, KnowledgeStore
+    from app.portal_store import PortalStore
+    publish_trigger = _debounced_portal_publish(settings)
+    knowledge_store = KnowledgeStore(settings.database_path)
+    knowledge_fn = None
+    knowledge_refresh_fn = None
+    if settings.history_enabled:
+        knowledge_builder = KnowledgeBuilder(knowledge_store, PortalStore(settings.database_path), agent,
+                                             owner_name=settings.owner_display_name)
+        knowledge_fn = DebouncedKnowledgeRunner(
+            knowledge_builder, on_change=publish_trigger, interval=10.0)
+        knowledge_refresh_fn = knowledge_builder.run
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
                         reply_agent=reply_agent,
@@ -354,4 +371,53 @@ def build_service(settings: Settings) -> RallyService:
                         group_memory=GroupMemoryStore(settings.database_path),
                         group_turns=GroupTurnStore(settings.database_path),
                         react_fn=react, typing_fn=typing, defer_heavy_work=True,
-                        history_fn=history_fn, helper_warm_fn=warm_helper)
+                        history_fn=history_fn, helper_warm_fn=warm_helper,
+                        portal_publish_fn=publish_trigger,
+                        knowledge_fn=knowledge_fn, knowledge_store=knowledge_store,
+                        knowledge_refresh_fn=knowledge_refresh_fn)
+
+
+class CoalescingPortalPublisher:
+    """Serialize portal deployments without losing an update made mid-deploy."""
+
+    def __init__(self, publish_fn):
+        self.publish_fn = publish_fn
+        self._lock = threading.Lock()
+        self._running = False
+        self._dirty = False
+
+    def __call__(self):
+        with self._lock:
+            self._dirty = True
+            if self._running:
+                return
+            self._running = True
+        threading.Thread(target=self._run, daemon=True, name="rally-portal-publish").start()
+
+    def _run(self):
+        while True:
+            with self._lock:
+                self._dirty = False
+            try:
+                result = self.publish_fn()
+                if result == "already publishing":
+                    # The periodic publisher owns the process-level deployment lock.
+                    # Keep this change dirty and retry shortly after it releases it
+                    # rather than silently deferring the update to the next tick.
+                    with self._lock:
+                        self._dirty = True
+                    time.sleep(1)
+            except Exception:
+                logging.getLogger(__name__).exception("Immediate portal publish failed")
+            with self._lock:
+                if not self._dirty:
+                    self._running = False
+                    return
+
+
+def _debounced_portal_publish(settings: Settings):
+    """Return a non-blocking publisher that coalesces, but never drops, changes."""
+    if not settings.portal_publish_approved:
+        return None
+    from scripts.publish_portal import publish
+    return CoalescingPortalPublisher(lambda: publish(settings))

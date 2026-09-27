@@ -43,6 +43,12 @@ _RECAP_ASK = re.compile(
     re.I,
 )
 _PICK_ASK = re.compile(r"\b(pick|lock|choose|decide)\b", re.I)
+_CANCEL_PLAN = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay)[,\s]+)?@?rally\b[\s,:!?-]*"
+    r"(?:please\s+)?(?:cancel|stop|drop|scrap|abort)\s+(?:(?:the|our|this|current)\s+)?"
+    r"(?:plan|booking|reservation)\b",
+    re.I,
+)
 _RESTAURANT_ASK = re.compile(
     r"\b(where should we eat|where to eat|restaurants?|recommend\w*\s+(?:a\s+)?"
     r"(?:place|spot|restaurant)|food rec)\b",
@@ -453,7 +459,9 @@ class RallyService:
                  portal_handler=None, web_answer_fn=None, adaptive_handler=None,
                  availability_fn=None, time_zone: str = "America/New_York", reply_agent=None,
                  group_memory=None, group_turns=None, react_fn=None, typing_fn=None,
-                 defer_heavy_work: bool = False, history_fn=None, helper_warm_fn=None):
+                 defer_heavy_work: bool = False, history_fn=None, helper_warm_fn=None,
+                 portal_publish_fn=None, knowledge_fn=None, knowledge_store=None,
+                 knowledge_refresh_fn=None):
         self.store = store
         self.agent = agent
         self.reply_agent = reply_agent or agent
@@ -475,12 +483,28 @@ class RallyService:
         self.defer_heavy_work = defer_heavy_work
         self.history_fn = history_fn
         self.helper_warm_fn = helper_warm_fn
+        self.portal_publish_fn = portal_publish_fn
+        self.knowledge_fn = knowledge_fn
+        self.knowledge_store = knowledge_store
+        self.knowledge_refresh_fn = knowledge_refresh_fn
+        self._thread_hydrated: set[str] = set()
         self._chat_locks_guard = Lock()
         self._chat_locks = {}
         self._heavy_inflight: set[str] = set()
+        self._heavy_pending: dict[str, list[ChatMessage]] = {}
+        self._heavy_chats_running: set[str] = set()
+        self._heavy_guard = Lock()
         self._decision_inflight: set[str] = set()
         self._remembered_ids: set[str] = set()
         self._pool: ThreadPoolExecutor | None = None
+
+    def _publish_portal(self) -> None:
+        if not self.portal_publish_fn:
+            return
+        try:
+            self.portal_publish_fn()
+        except Exception as exc:
+            _log_scheduled_failure("portal publish trigger", exc)
 
     def _chat_lock(self, chat_id: str) -> RLock:
         with self._chat_locks_guard:
@@ -489,6 +513,21 @@ class RallyService:
                 lock = RLock()
                 self._chat_locks[chat_id] = lock
             return lock
+
+    def refresh_knowledge(self, chat_id: str) -> int:
+        """Synchronously update one group's KB from messages after its KB cursor.
+
+        This is intentionally separate from the debounced background trigger: the
+        local admin desk uses it for a user-requested, immediately observable
+        refresh. The builder's durable cursor makes repeated clicks a no-op until
+        new archive messages arrive.
+        """
+        if not self._chat_allowed(chat_id):
+            raise ValueError("Chat is not allowed")
+        if self.knowledge_refresh_fn is None:
+            raise RuntimeError("Knowledge refresh is unavailable")
+        with self._chat_lock(chat_id):
+            return self.knowledge_refresh_fn(chat_id)
 
     def _chat_allowed(self, chat_id: str) -> bool:
         excluded = getattr(self, 'excluded_chat_ids', frozenset())
@@ -573,6 +612,16 @@ class RallyService:
             return True
         self._hydrate_prior_thread(message)
         plan = self.store.get_plan(message.chat_id)
+        if plan and _CANCEL_PLAN.match(message.text):
+            cancelled = self.store.abandon_plan(message.chat_id)
+            if cancelled is None:
+                reply = "Rally: There isn't an active plan I can cancel."
+            else:
+                reply = "Rally: Okay — I canceled the active plan and cleared its pending proposal."
+                self._publish_portal()
+            self._queue_and_send(message.chat_id, reply, "plan_cancel", message.message_id)
+            self.store.mark_processed(message.message_id)
+            return True
         if (plan and plan.state not in ("READY", "EXECUTING", "DONE", "ABANDONED") and plan.facts.date and
                 self.store.availability_requested(plan.id, plan.version) and
                 looks_like_availability(message.text)):
@@ -648,10 +697,10 @@ class RallyService:
                 and self._maybe_revive_from_inbound(message, plan)):
             self.store.mark_processed(message.message_id)
             return True
-        self._heavy_inflight.add(message.message_id)
         if self.defer_heavy_work:
-            self._executor().submit(self._run_heavy, message)
+            self._schedule_heavy(message)
             return True
+        self._heavy_inflight.add(message.message_id)
         return self._run_heavy(message)
 
     def _executor(self) -> ThreadPoolExecutor:
@@ -665,8 +714,45 @@ class RallyService:
         finally:
             self._heavy_inflight.discard(message.message_id)
 
-    def _extract_and_learn(self, message: ChatMessage) -> bool:
-        already_replied = self.store.has_message("direct_reply", message.message_id)
+    def _schedule_heavy(self, message: ChatMessage) -> None:
+        """Coalesce a short chat burst into one plan extraction.
+
+        Every inbound text is already durable before this point. The batcher only
+        reduces redundant model calls; it never delays the direct-reply path.
+        """
+        with self._heavy_guard:
+            self._heavy_inflight.add(message.message_id)
+            self._heavy_pending.setdefault(message.chat_id, []).append(message)
+            if message.chat_id in self._heavy_chats_running:
+                return
+            self._heavy_chats_running.add(message.chat_id)
+        self._executor().submit(self._run_heavy_batch, message.chat_id)
+
+    def _run_heavy_batch(self, chat_id: str) -> None:
+        # Let consecutive iMessages settle briefly, then extract from their shared
+        # current context once. This is off the webhook thread.
+        time.sleep(0.75)
+        while True:
+            with self._heavy_guard:
+                batch = self._heavy_pending.pop(chat_id, [])
+            if not batch:
+                with self._heavy_guard:
+                    self._heavy_chats_running.discard(chat_id)
+                return
+            try:
+                self._extract_and_learn(batch[-1], [item.message_id for item in batch])
+            finally:
+                with self._heavy_guard:
+                    for item in batch:
+                        self._heavy_inflight.discard(item.message_id)
+                # New messages received during the model call are handled by the
+                # next loop as one fresh batch rather than losing their update.
+
+    def _extract_and_learn(self, message: ChatMessage,
+                           processed_ids: list[str] | None = None) -> bool:
+        processed_ids = processed_ids or [message.message_id]
+        already_replied = any(self.store.has_message("direct_reply", message_id)
+                              for message_id in processed_ids)
         plan = self.store.get_plan(message.chat_id)
         messages = self.store.recent_messages(message.chat_id)
         extract_started = time.perf_counter()
@@ -675,9 +761,9 @@ class RallyService:
         except Exception as exc:
             self._log_latency("extract", extract_started)
             record_latency("extraction", time.perf_counter() - extract_started)
-            self._record_extraction_failure([message.message_id], exc)
+            self._record_extraction_failure(processed_ids, exc)
             if already_replied:
-                self.store.mark_processed(message.message_id)
+                self.store.mark_processed_many(message.chat_id, processed_ids)
                 return True
             if self.defer_heavy_work:
                 _log_scheduled_failure("plan extract", exc)
@@ -689,11 +775,19 @@ class RallyService:
             if not plan or plan.state not in ("DONE", "ABANDONED") or (
                     facts.activity, facts.goal, facts.date) != (
                     plan.facts.activity, plan.facts.goal, plan.facts.date):
-                self.store.save_plan(message.chat_id, facts, message.sent_at)
+                previous_version = plan.version if plan else None
+                saved = self.store.save_plan(message.chat_id, facts, message.sent_at)
+                if previous_version != saved.version:
+                    self._publish_portal()
         learn_started = time.perf_counter()
         self._learn_from_chat(message, messages)
         self._log_latency("learn", learn_started)
-        self.store.mark_processed(message.message_id)
+        self.store.mark_processed_many(message.chat_id, processed_ids)
+        if self.knowledge_fn:
+            try:
+                self.knowledge_fn(message.chat_id)
+            except Exception as exc:
+                _log_scheduled_failure("knowledge trigger", exc)
         return True
 
     def _record_extraction_failure(self, message_ids: list[str], exc: Exception):
@@ -1200,7 +1294,7 @@ class RallyService:
                 return self.web_answer_fn(message.text, tone=group_tone(messages)), False
             except Exception as exc:
                 _log_scheduled_failure("web answer", exc)
-                return ("web search is dead right now so i can't verify shit. try later."), False
+                return ("web search is down right now so i can't verify that, try later."), False
         return None
 
     def _call_without_chat_lock(self, chat_id: str, fn):
@@ -1328,6 +1422,9 @@ class RallyService:
                 phrase = forget_phrase(message.text)
                 if phrase and phrase.casefold() != target:
                     removed = self.group_memory.forget_fact(message.chat_id, phrase)
+            if self.knowledge_store is not None:
+                phrase = forget_phrase(message.text) or target
+                removed = self.knowledge_store.forget_matching(message.chat_id, phrase) > 0 or removed
             text = "okay, i forgot that." if removed else "i don't have that saved."
         self._send_group_reply(message, text, allow_flood=True)
         self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))

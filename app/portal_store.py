@@ -19,6 +19,7 @@ DEFAULT_SECTIONS = {
     "plans": True,
     "members": True,
     "activity": True,
+    "knowledge": True,
 }
 THEMES = {"imessage", "midnight", "sage"}
 
@@ -313,9 +314,20 @@ class PortalStore:
                 WHERE reaction.chat_id=? AND reaction.reaction_type IN ('laugh','haha')
                     AND reaction.is_deleted=0 AND target.is_deleted=0
                 GROUP BY target.sender_id ORDER BY laugh_count DESC""", (chat_id,)).fetchall()
+            reactions = db.execute("""SELECT target.sender_id, COUNT(*) AS reaction_count
+                FROM portal_messages reaction JOIN portal_messages target
+                ON target.chat_id=reaction.chat_id AND target.message_id=reaction.reaction_to
+                WHERE reaction.chat_id=? AND reaction.reaction_type IS NOT NULL
+                    AND reaction.is_deleted=0 AND target.is_deleted=0
+                GROUP BY target.sender_id ORDER BY reaction_count DESC""", (chat_id,)).fetchall()
+            busiest = db.execute("""SELECT substr(sent_at,1,10) AS day, COUNT(*) AS message_count
+                FROM portal_messages WHERE chat_id=? AND is_deleted=0 AND text!='' AND reaction_type IS NULL
+                GROUP BY day ORDER BY message_count DESC LIMIT 1""", (chat_id,)).fetchone()
         return {"message_count": total, "attachment_count": attachments,
                 "by_member": [dict(row) for row in rows],
-                "laughs_received": [dict(row) for row in laughs]}
+                "laughs_received": [dict(row) for row in laughs],
+                "reactions_received": [dict(row) for row in reactions],
+                "busiest_day": dict(busiest) if busiest else None}
 
     def historical_candidates(self, chat_id: str, query: str, limit: int = 120) -> list[dict]:
         """Find older conversation evidence without changing Rally's tracked plans."""
