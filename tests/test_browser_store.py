@@ -64,6 +64,15 @@ def test_changed_digest_or_expiry_or_cancel_blocks_approval(tmp_path):
         db.resolve_approval(OWNER, SENDER, "CODE03", True, now=NOW)
 
 
+def test_failed_request_can_be_retried_for_same_message(tmp_path):
+    db = store(tmp_path)
+    row = db.create_request(OWNER, "m1", "Search italian midtown", sender_id=SENDER)
+    db.mark_status(row["id"], "failed")
+    retried = db.create_request(OWNER, "m1", "Search italian midtown", sender_id=SENDER)
+    assert retried["id"] == row["id"]
+    assert retried["status"] == "pending"
+
+
 def test_running_requests_become_uncertain_on_restart_and_are_not_replayed(tmp_path):
     path = tmp_path / "rally.sqlite3"
     db = BrowserStore(path)

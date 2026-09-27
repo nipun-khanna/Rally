@@ -3,7 +3,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.browser.agent import BrowserActionDecision, BrowserTaskService, ToolContext
+from app.browser.agent import (
+    BrowserActionDecision, BrowserTaskService, ToolContext,
+    answer_from_page, looks_like_browser_request, looks_like_reservation_request,
+)
 from app.browser.runtime import BrowserObservation
 from app.browser.store import BrowserStore
 
@@ -49,6 +52,7 @@ def settings():
         "browser_enabled": True,
         "browser_owner_chat_id": OWNER,
         "browser_owner_sender_id": SENDER,
+        "allowed_chat_ids": frozenset(),
         "browser_max_actions": 4,
         "browser_max_text_chars": 6000,
     })()
@@ -93,16 +97,113 @@ def test_agent_sends_only_request_and_untrusted_observation(tmp_path):
     assert runtime.authenticated == [True]
 
 
-def test_group_sender_is_rejected_and_does_not_use_owner_session(tmp_path):
+def test_allowlisted_group_can_search(tmp_path):
+    runtime = FakeRuntime()
+    cfg = settings()
+    cfg.allowed_chat_ids = frozenset({"iMessage;+;HackGT13"})
+    calls = []
+
+    def transport(schema, prompt, data):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"action": "search", "query": "italian midtown"}
+        return {"action": "complete", "answer": "A few Italian spots are open tonight."}
+
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 transport, cfg)
+    result = service.run(context(chat_id="iMessage;+;HackGT13", sender_id="member",
+                                 text="Hey Rally, search for italian in midtown"),
+                         "Hey Rally, search for italian in midtown")
+    assert result["status"] == "complete"
+    assert "booked" not in result["answer"].lower()
+    assert runtime.actions[0]["action"] == "search"
+    assert runtime.authenticated
+
+
+def test_unallowlisted_group_cannot_use_browser(tmp_path):
     runtime = FakeRuntime()
     service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
                                  lambda *a: {"action": "complete", "answer": "no"},
                                  settings())
     with pytest.raises(PermissionError):
         service.run(context(chat_id="iMessage;+;HackGT13", sender_id="member"),
-                    "Open https://news.example.com/account")
+                    "Hey Rally, search for italian in midtown")
     assert runtime.authenticated == []
     assert runtime.actions == []
+
+
+class FakeVendor:
+    def __init__(self, result=None, error=None):
+        self.requests = []
+        self.result = result or {"status": "ok", "answer": "Example Domain",
+                                 "url": "https://example.com", "waiting": False}
+        self.error = error
+
+    def run_task(self, request, *, timeout_seconds=180):
+        self.requests.append(request)
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def test_vendor_agent_handles_search_open_and_reserve(tmp_path):
+    runtime = FakeRuntime()
+    vendor = FakeVendor()
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 lambda *a: {"action": "complete", "answer": "no"},
+                                 settings(), vendor_agent=vendor)
+    opened = service.run(context(text="Hey Rally, open https://example.com",
+                                 message_id="m-open"),
+                         "Hey Rally, open https://example.com")
+    assert opened["status"] == "complete"
+    assert opened["url"] == "https://example.com"
+    assert runtime.actions == []
+    assert vendor.requests[0] == "Hey Rally, open https://example.com"
+
+    vendor.result = {"status": "ok", "answer": "WAIT_FOR_HUMAN sign in",
+                     "url": "https://www.opentable.com/login", "waiting": True}
+    reserved = service.run(context(text="Hey Rally, reserve a table at Carbone",
+                                   message_id="m-res"),
+                           "Hey Rally, reserve a table at Carbone")
+    assert reserved["status"] == "awaiting_human"
+    assert "i booked" not in reserved["answer"].lower()
+    assert runtime.actions == []
+
+
+def test_reservation_waits_and_does_not_claim_booked(tmp_path):
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation(
+        "https://www.opentable.com/login", "Sign in", "Enter password to confirm", ())
+    service = BrowserTaskService(
+        runtime, BrowserStore(tmp_path / "r.sqlite3"),
+        lambda *a: {"action": "complete", "answer": "You're all set, I booked it."},
+        settings())
+    result = service.run(context(text="Hey Rally, reserve a table at Carbone Friday 8"),
+                         "Hey Rally, reserve a table at Carbone Friday 8")
+    assert result["status"] == "awaiting_human"
+    assert "you're all set" not in result["answer"].lower()
+    assert "i booked" not in result["answer"].lower()
+    assert "sign in" in result["answer"].lower() or "mac" in result["answer"].lower()
+    assert looks_like_reservation_request("Hey Rally, reserve a table at Carbone")
+    assert looks_like_browser_request("Hey Rally, search for italian in midtown")
+
+
+def test_wait_for_human_does_not_fill_passwords(tmp_path):
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation(
+        "https://www.resy.com/login", "Confirm", "Password",
+        ({"role": "textbox", "name": "Password"},))
+
+    def transport(schema, prompt, data):
+        return {"action": "fill", "role": "textbox", "name": "Password", "text": "stolen"}
+
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 transport, settings())
+    result = service.run(context(text="Hey Rally, book a table at the diner"),
+                         "Hey Rally, book a table at the diner")
+    assert result["status"] == "awaiting_human"
+    assert runtime.actions == []
+    assert "stolen" not in result["answer"]
 
 
 def test_any_prefixed_owner_dm_is_authenticated(tmp_path):
@@ -120,12 +221,41 @@ def test_any_prefixed_owner_dm_is_authenticated(tmp_path):
     assert runtime.authenticated == [True]
 
 
+def test_phone_handle_on_private_guid_is_authenticated(tmp_path):
+    chat = "any;-;+15555550100"
+    runtime = FakeRuntime()
+    cfg = settings()
+    cfg.browser_owner_chat_id = chat
+    cfg.browser_owner_sender_id = "local-imessage-account"
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 lambda *a: {"action": "complete", "answer": "ok"},
+                                 cfg)
+    result = service.run(context(chat_id=chat, sender_id="+15555550100"),
+                         "Open https://example.com")
+    assert result["status"] == "complete"
+    assert runtime.authenticated == [True]
+
+
+def test_configured_extra_handle_is_authenticated(tmp_path):
+    runtime = FakeRuntime()
+    cfg = settings()
+    cfg.browser_owner_sender_id = "local-imessage-account,owner@example.com"
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 lambda *a: {"action": "complete", "answer": "ok"},
+                                 cfg)
+    result = service.run(context(sender_id="Owner@example.com"),
+                         "Open https://example.com")
+    assert result["status"] == "complete"
+    assert runtime.authenticated == [True]
+
+
 def test_wrong_owner_sender_is_rejected(tmp_path):
     service = BrowserTaskService(FakeRuntime(), BrowserStore(tmp_path / "r.sqlite3"),
                                  lambda *a: {"action": "complete", "answer": "no"},
                                  settings())
     with pytest.raises(PermissionError):
-        service.run(context(sender_id="intruder"), "Open https://news.example.com/article")
+        service.run(context(chat_id="iMessage;+;other-group", sender_id="intruder"),
+                    "Hey Rally, open https://news.example.com/article")
 
 
 def test_commitment_click_stops_for_owner_approval(tmp_path):
@@ -148,6 +278,70 @@ def test_commitment_click_stops_for_owner_approval(tmp_path):
     assert "Purchase now" in result["summary"]
     assert runtime.actions == []
     assert len(calls) == 1
+
+
+def test_planner_timeout_after_search_answers_from_page(tmp_path):
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation(
+        "https://www.google.com/search?q=italian+midtown",
+        "italian midtown - Google Search",
+        "Carbone Midtown\n4.6 stars · Italian\nL'Artusi\nWest Village Italian\nDon Angie",
+        ({"role": "link", "name": "Carbone"}, {"role": "link", "name": "Sign in"}),
+    )
+
+    def transport(schema, prompt, data):
+        raise TimeoutError("Grok browseractiondecision failed: timeout")
+
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 transport, settings())
+    result = service.run(context(text="Hey Rally, search for italian in midtown"),
+                         "Hey Rally, search for italian in midtown")
+    assert result["status"] == "complete"
+    assert "carbone" in result["answer"].lower()
+    assert "next step" not in result["answer"].lower()
+    assert "recap" not in result["answer"].lower()
+    assert result["url"].startswith("https://www.google.com/search")
+
+
+def test_planner_timeout_without_page_text_fails(tmp_path):
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation("about:blank", "", "", ())
+
+    def transport(schema, prompt, data):
+        raise TimeoutError("timeout")
+
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 transport, settings())
+    result = service.run(context(), "Hey Rally, search for italian in midtown")
+    assert result["status"] == "failed"
+    assert "ask rally again" in result["answer"].lower()
+
+
+def test_planner_timeout_on_reservation_waits(tmp_path):
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation(
+        "https://www.opentable.com/r/carbone", "Carbone", "Reserve a table", ())
+
+    def transport(schema, prompt, data):
+        raise TimeoutError("timeout")
+
+    service = BrowserTaskService(runtime, BrowserStore(tmp_path / "r.sqlite3"),
+                                 transport, settings())
+    result = service.run(context(text="Hey Rally, reserve a table at Carbone"),
+                         "Hey Rally, reserve a table at Carbone")
+    assert result["status"] == "awaiting_human"
+    assert "i booked" not in result["answer"].lower()
+
+
+def test_answer_from_page_skips_chrome():
+    page = BrowserObservation(
+        "https://www.google.com/search?q=x", "x",
+        "Sign in\nImages\nCarbone Midtown Italian\nL'Artusi",
+        ({"role": "link", "name": "Images"},),
+    )
+    answer = answer_from_page(page)
+    assert "carbone" in answer.lower()
+    assert "sign in" not in answer.lower()
 
 
 def test_page_injection_cannot_mark_group_authenticated(tmp_path):

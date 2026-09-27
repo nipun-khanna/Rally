@@ -79,6 +79,18 @@ def test_members_get_the_same_hosted_link_without_a_token():
     assert "token=" not in reply
 
 
+def test_private_dm_dashboard_uses_hosted_group_id():
+    dm = "any;-;+15555550100"
+    reply = admin_dashboard_reply(
+        message("Rally, send the dashboard", chat=dm),
+        Portal("C3JgHostedArchiveExample"), APP)
+    assert reply is not None
+    assert "C3JgHostedArchiveExample" in reply
+    assert "page" in reply.lower()
+    assert "token=" not in reply
+    assert dm not in reply
+
+
 def test_missing_app_url_does_not_text_localhost():
     reply, portal = handle("Rally, send the dashboard", app_url="")
     assert reply is not None

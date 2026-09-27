@@ -37,11 +37,12 @@ class FakeRuntime:
         return {"running": self.running, "installed": self.installed,
                 "profile": "configured"}
 
-    def start(self):
+    def start(self, headed=False):
         if not self.installed:
             raise RuntimeError("Chromium is not installed")
         self.running = True
         self.starts += 1
+        self.headed = headed
         return self.status()
 
     def stop(self):

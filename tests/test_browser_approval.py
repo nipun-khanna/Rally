@@ -36,6 +36,7 @@ def settings():
         "browser_enabled": True,
         "browser_owner_chat_id": OWNER,
         "browser_owner_sender_id": SENDER,
+        "allowed_chat_ids": frozenset(),
         "browser_max_actions": 4,
         "browser_max_text_chars": 6000,
     })()

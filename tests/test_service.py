@@ -222,7 +222,11 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(self.service.receive(ChatMessage(
             "direct-book", "chat1", "nick", "Rally, book it", NOW)))
         self.assertIsNone(self.store.reservation(proposal_id))
-        self.assertEqual(len(self.agent.direct_calls), 1)
+        self.assertTrue(self.sent)
+        body = self.sent[-1][1].lower()
+        self.assertTrue(any(token in body for token in (
+            "can't book", "cannot book", "can't actually book")))
+        self.assertEqual(self.agent.direct_calls, [])
 
     def test_direct_reply_survives_extraction_failure_without_duplicate(self):
         class FailingExtractor:

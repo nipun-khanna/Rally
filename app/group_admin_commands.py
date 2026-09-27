@@ -3,6 +3,8 @@
 import re
 from urllib.parse import urlsplit
 
+from app.bluebubbles import is_private_direct_chat
+
 
 _DASHBOARD = re.compile(
     r"\b(?:admin\s+dashboard|"
@@ -40,7 +42,8 @@ def admin_dashboard_reply(message, portal_store, app_url: str | None,
     if not _DASHBOARD.search(getattr(message, "text", None) or ""):
         return None
     chat_id = getattr(message, "chat_id", None)
-    if not isinstance(chat_id, str) or ";+;" not in chat_id:
+    if not isinstance(chat_id, str) or (
+            ";+;" not in chat_id and not is_private_direct_chat(chat_id)):
         return None
     origin = _hosted_origin(app_url)
     resolve = resolve_public_id or (portal_store.ensure_group if portal_store is not None else None)

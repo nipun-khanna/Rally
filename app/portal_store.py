@@ -132,6 +132,18 @@ class PortalStore:
         result["sections"] = {**DEFAULT_SECTIONS, **json.loads(result.pop("sections_json"))}
         return result
 
+    def hosted_group_public_id(self, prefix: str = "C3Jg") -> str | None:
+        """Existing published group archive id, or None. Never invents a new id."""
+        if not isinstance(prefix, str) or not prefix:
+            return None
+        with self._db() as db:
+            row = db.execute(
+                """SELECT public_id FROM portal_groups
+                   WHERE instr(chat_id, ';+;') > 0 AND public_id LIKE ?
+                   ORDER BY created_at LIMIT 1""",
+                (prefix + "%",)).fetchone()
+        return row["public_id"] if row else None
+
     def group_for_chat(self, chat_id: str) -> dict | None:
         with self._db() as db:
             row = db.execute("SELECT public_id FROM portal_groups WHERE chat_id=?", (chat_id,)).fetchone()

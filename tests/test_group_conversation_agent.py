@@ -180,6 +180,23 @@ def test_conversation_prompt_direct_call_requires_a_useful_message():
     assert "7pm" in user or "friday" in user
     assert "help the group decide" in user or "next concrete step" in captured[0]["messages"][1]["content"].casefold()
 
+
+def test_question_payload_asks_for_an_answer_not_a_recap():
+    captured = []
+
+    def transport(payload):
+        captured.append(payload)
+        return {"relevant": True, "safety": "ok",
+                "message": "walk three pointers to reverse it.",
+                "reaction": "like", "memory_candidates": []}
+
+    GrokClient("key", transport=transport).decide_conversation(
+        "how to reverse a linkedlist", None, MESSAGES)
+    user = captured[0]["messages"][1]["content"].casefold()
+    assert "answer the latest question" in user
+    assert "do not recap" in user
+    assert user.count("help the group decide") == 0
+
     with pytest.raises(ValueError, match="empty direct reply"):
         GrokClient("key", transport=lambda payload: {
             "relevant": True, "safety": "ok", "message": None,

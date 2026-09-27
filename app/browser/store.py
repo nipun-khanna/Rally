@@ -76,7 +76,33 @@ class BrowserStore:
                              (chat_id, message_id)).fetchone()
             if row["request_hash"] != request_hash:
                 raise ValueError("Message ID already used with different text")
+            if row["status"] == "failed":
+                db.execute("""UPDATE browser_requests
+                    SET status='pending', url_host='', url_path='', updated_at=?
+                    WHERE id=? AND status='failed'""", (now, row["id"]))
+                row = db.execute("SELECT * FROM browser_requests WHERE id=?",
+                                 (row["id"],)).fetchone()
+            twin = db.execute("""SELECT * FROM browser_requests
+                WHERE chat_id=? AND request_hash=? AND id!=?
+                  AND status IN ('pending','running','complete','uncertain',
+                                 'awaiting_human','awaiting_approval')
+                ORDER BY created_at ASC""",
+                              (chat_id, request_hash, row["id"])).fetchone()
+            if twin is not None:
+                if row["status"] == "pending":
+                    db.execute("""UPDATE browser_requests
+                        SET status='cancelled', updated_at=? WHERE id=? AND status='pending'""",
+                               (now, row["id"]))
+                return dict(twin)
             return dict(row)
+
+    def claim_request(self, request_id: str) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._db() as db:
+            changed = db.execute("""UPDATE browser_requests
+                SET status='running', updated_at=?
+                WHERE id=? AND status='pending'""", (now, request_id)).rowcount
+        return changed == 1
 
     def get_request(self, chat_id: str, message_id: str) -> dict:
         with self._db() as db:
