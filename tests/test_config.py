@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 
-from app.config import Settings, build_service
+from app.config import CoalescingPortalPublisher, Settings, build_service
 from app.agent import GrokClient
 from app.muse import MuseExtractor
 from app.calendar import CalendarEvent, CalendarError
@@ -19,6 +19,48 @@ def test_browser_defaults_off_and_requires_private_owner():
 
     with pytest.raises(ValueError):
         Settings.from_env({"RALLY_BROWSER_ENABLED": "1"})
+
+
+def test_coalescing_publisher_runs_again_when_changed_mid_deploy():
+    import threading
+    import time
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def publish():
+        calls.append(1)
+        if len(calls) == 1:
+            started.set()
+            release.wait(timeout=1)
+
+    publisher = CoalescingPortalPublisher(publish)
+    publisher()
+    assert started.wait(timeout=1)
+    publisher()
+    release.set()
+    deadline = time.monotonic() + 1
+    while len(calls) < 2 and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert len(calls) == 2
+
+
+def test_coalescing_publisher_retries_when_periodic_publish_has_the_lock():
+    import time
+
+    calls = []
+
+    def publish():
+        calls.append(1)
+        return "already publishing" if len(calls) == 1 else "published"
+
+    publisher = CoalescingPortalPublisher(publish)
+    publisher()
+    deadline = time.monotonic() + 2
+    while len(calls) < 2 and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("override", [

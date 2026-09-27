@@ -43,8 +43,13 @@ def test_export_contains_all_pages_and_visible_media_only(tmp_path):
     portal.upsert_messages(group, rows)
     output = tmp_path / "portal_build"
     summary = export_portal(db, media_root, {group}, output)
-    assert summary == {"groups": 1, "pages": 2, "media": 1}
+    assert summary == {"groups": 1, "pages": 3, "media": 1}
     assert (output / public_id / "index.html").exists()
+    assert (output / public_id / "knowledge" / "index.html").exists()
+    kb = json.loads((output / public_id / "kb.json").read_text(encoding="utf-8"))
+    assert set(kb) >= {"people", "group", "links", "analytics"}
+    assert (output / "api" / "chat.js").exists()
+    assert "*/kb.json" in (output / "vercel.json").read_text()
     assert (output / public_id / "history" / "2.html").exists()
     assert len(list((output / public_id / "media").iterdir())) == 1
     assert any(item["text"] == "Dinner next week" for item in json.loads(

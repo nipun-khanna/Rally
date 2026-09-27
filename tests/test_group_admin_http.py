@@ -112,6 +112,43 @@ def test_group_admin_cookie_lets_picker_open_a_group_without_exposing_token(tmp_
     assert "admin-secret" not in detail.text
 
 
+def test_group_admin_refreshes_only_new_archive_messages_before_kb(tmp_path):
+    class HistoryClient:
+        def __init__(self):
+            self.offsets = []
+
+        def fetch_messages(self, _chat_id, limit, offset):
+            self.offsets.append((limit, offset))
+            if offset == 1:
+                return [{"guid": "m2", "dateCreated": int(NOW.timestamp() * 1000),
+                         "text": "new favorite: dumplings", "isFromMe": False,
+                         "handle": {"address": "nick"}}]
+            return []
+
+    path = tmp_path / "rally.sqlite3"
+    store = Store(path)
+    portal = PortalStore(path)
+    portal.ensure_group(GROUP)
+    portal.upsert_messages(GROUP, [{"message_id": "m1", "sender_id": "nick", "text": "old",
+                                    "sent_at": NOW.isoformat()}])
+    portal.set_import_state(GROUP, cursor="1", status="complete")
+    refreshed = []
+    rally = RallyService(store, QuietAgent(), lambda facts: [], lambda chat, text: None,
+                         allowed_chat_ids={GROUP}, knowledge_refresh_fn=lambda chat: refreshed.append(chat) or 2)
+    app = create_app(rally, webhook_token="webhook-secret", admin_token="admin-secret",
+                     schedule=False, portal_store=portal, history_client=HistoryClient(),
+                     history_enabled=True)
+    client = TestClient(app)
+
+    encoded = quote(GROUP, safe="")
+    response = client.post(f"/admin/groups/{encoded}/knowledge/refresh",
+                           headers={"X-Rally-Admin-Token": "admin-secret"})
+    assert response.status_code == 200
+    assert "Updated: 1 new messages, 2 facts changed." in response.text
+    assert refreshed == [GROUP]
+    assert portal.list_messages(GROUP)[0]["message_id"] == "m2"
+
+
 def setup_commands(tmp_path, *, app_url="https://rallyplans.vercel.app", admin_token="admin-secret"):
     path = tmp_path / "rally.sqlite3"
     store = Store(path)

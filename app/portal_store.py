@@ -19,6 +19,7 @@ DEFAULT_SECTIONS = {
     "plans": True,
     "members": True,
     "activity": True,
+    "knowledge": True,
 }
 THEMES = {"imessage", "midnight", "sage"}
 

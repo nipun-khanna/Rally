@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 from app.config import Settings
 from app.portal_store import PortalStore
 from scripts.export_portal import export_portal
+
+# Serializes every publish() call (manual, periodic, or debounced-trigger) so two
+# concurrent runs never rmtree/rewrite the same output directory out from under each other.
+_publish_lock = threading.Lock()
 
 
 def _digest(directory: Path) -> str:
@@ -30,10 +36,28 @@ def publish(settings: Settings, *, project: str = "rallyplans",
     """Rebuild and deploy only when every archive import completed and content changed."""
     if os.environ.get("RALLY_PORTAL_PUBLISH_APPROVED") != "1":
         raise RuntimeError("External publication has not been enabled")
+    if not _publish_lock.acquire(blocking=False):
+        return "already publishing"
+    try:
+        lock_path = settings.database_path.parent / "portal_publish.lock"
+        with open(lock_path, "w") as lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return "already publishing"
+            try:
+                return _publish(settings, project=project, output_dir=output_dir)
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    finally:
+        _publish_lock.release()
+
+
+def _publish(settings: Settings, *, project: str, output_dir: str | Path | None) -> str:
     portal_store = PortalStore(settings.database_path)
-    if not settings.allowed_chat_ids or any(
-            portal_store.import_state(chat_id)["status"] != "complete"
-            for chat_id in settings.allowed_chat_ids):
+    ready_chat_ids = {chat_id for chat_id in settings.allowed_chat_ids
+                      if portal_store.import_state(chat_id)["status"] == "complete"}
+    if not ready_chat_ids:
         return "waiting for complete history import"
     # Deploy from outside any git working tree: the Vercel CLI attaches ambient
     # git metadata (commit author) from an ancestor .git, which this project's
@@ -41,7 +65,7 @@ def publish(settings: Settings, *, project: str = "rallyplans",
     output = (Path(output_dir).resolve() if output_dir is not None
               else Path.home() / ".rally" / "portal_build")
     export_portal(settings.database_path, settings.database_path.parent / "portal_media",
-                  settings.allowed_chat_ids, output, owner_name=settings.owner_display_name)
+                  ready_chat_ids, output, owner_name=settings.owner_display_name)
     digest = _digest(output)
     marker = settings.database_path.parent / "portal_publish_hash"
     if marker.exists() and marker.read_text() == digest:

@@ -19,9 +19,9 @@ from app.history import BlueBubblesHistoryClient, HistoryImporter, normalize_arc
 from app.models import ChatMessage
 from app.latency import record_latency
 from app.portal_commands import portal_reply
-from app.portal_data import build_portal_data
+from app.portal_data import build_knowledge_data, build_portal_data
 from app.portal_store import PortalStore
-from app.portal_view import render_portal
+from app.portal_view import render_knowledge, render_portal
 from app.voice.page import render_voice_page
 from app.voice.session import VoiceSessionError, build_session_payload, mint_ephemeral_token
 
@@ -165,9 +165,15 @@ def create_app(service=None, *, webhook_token: str | None = None,
                     importer.hydrate_pending_media(chat_id)
                 except Exception:
                     logger.exception("Group media sync failed")
+                knowledge_fn = getattr(service, "knowledge_fn", None)
+                if knowledge_fn:
+                    knowledge_fn(chat_id)
             else:
                 try:
-                    importer.import_page(chat_id)
+                    # Backfill in bulk (up to ~2000 messages/tick) so a newly allowlisted
+                    # chat's page goes live in one or two ticks instead of trickling in
+                    # 100 messages per minute.
+                    importer.import_all(chat_id, limit=100, max_pages=20)
                 except Exception:
                     logger.exception("Group history import failed")
 
@@ -299,6 +305,11 @@ def create_app(service=None, *, webhook_token: str | None = None,
                     if archived:
                         portal_store.ensure_group(chat_id)
                         portal_store.upsert_messages(chat_id, [archived])
+                        # KB work is incremental and debounced. Start it when the
+                        # message is archived rather than after slower plan extraction.
+                        knowledge_fn = getattr(service, "knowledge_fn", None)
+                        if knowledge_fn:
+                            knowledge_fn(chat_id)
         incoming = normalize_webhook(payload)
         if incoming is None:
             return {"accepted": False}
@@ -406,6 +417,39 @@ def create_app(service=None, *, webhook_token: str | None = None,
             list_admin_groups(service, portal_store, excluded_chat_ids=personal_chat_ids()))
         return remember_admin(HTMLResponse(page), presented)
 
+    @app.post('/admin/groups/{chat_id:path}/knowledge/refresh')
+    def refresh_group_knowledge(chat_id: str,
+                                x_rally_admin_token: str | None = Header(default=None),
+                                rally_admin: str | None = Cookie(default=None)):
+        authorize_admin(x_rally_admin_token, rally_admin)
+        if chat_id not in allowed_chats or chat_id in personal_chat_ids():
+            raise HTTPException(404, 'Group not found')
+        if importer is None or getattr(service, 'knowledge_refresh_fn', None) is None:
+            raise HTTPException(409, 'Knowledge refresh is unavailable')
+        try:
+            # The archive cursor fetches only messages received since its last
+            # completed scan; the KB cursor then limits extraction to messages it
+            # has not already processed.
+            imported = importer.import_all(chat_id, limit=100, max_pages=20)
+            facts_updated = service.refresh_knowledge(chat_id)
+            if (imported or facts_updated) and service.portal_publish_fn:
+                service.portal_publish_fn()
+            from app.group_admin import build_group_admin
+            from app.group_admin_view import render_group_admin
+            data = build_group_admin(
+                service, chat_id, portal_store=portal_store,
+                excluded_chat_ids=personal_chat_ids(),
+                identity={'webhook_token': webhook_token, 'admin_token': admin_token})
+            if data is None:
+                raise HTTPException(404, 'Group not found')
+            data['knowledge']['notice'] = (
+                'Knowledge is already up to date.' if not (imported or facts_updated) else
+                f'Updated: {imported} new messages, {facts_updated} facts changed.')
+            return remember_admin(HTMLResponse(render_group_admin(data)), x_rally_admin_token)
+        except Exception as exc:
+            _log_failure('Knowledge refresh', exc)
+            raise HTTPException(503, 'Knowledge refresh could not finish') from None
+
     @app.get('/admin/groups/{chat_id:path}', response_class=HTMLResponse)
     def admin_group_detail(chat_id: str, token: str | None = None,
                            x_rally_admin_token: str | None = Header(default=None),
@@ -477,6 +521,18 @@ def create_app(service=None, *, webhook_token: str | None = None,
             raise HTTPException(404, "Media not available")
         return FileResponse(path, media_type=item["mime_type"] or "application/octet-stream",
                             filename=item["filename"] or "attachment")
+
+    @app.get("/{group_id}/knowledge", response_class=HTMLResponse)
+    def portal_knowledge(group_id: str):
+        group = portal_store.get_group(group_id)
+        if (group is None or group['chat_id'] in personal_chat_ids() or group["chat_id"] not in allowed_chats
+                or not group["sections"].get("knowledge", True)):
+            raise HTTPException(404, "Group not found")
+        from app.knowledge import KnowledgeStore
+        overview = build_portal_data(service, portal_store, group, owner_name=owner_display_name)
+        return HTMLResponse(render_knowledge(build_knowledge_data(
+            portal_store, KnowledgeStore(portal_store.path), group,
+            owner_name=owner_display_name, overview=overview)))
 
     @app.get("/{group_id}", response_class=HTMLResponse)
     def portal(group_id: str, before: str | None = None,

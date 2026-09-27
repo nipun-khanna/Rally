@@ -255,6 +255,30 @@ class Store:
         with self._db() as db:
             db.execute("UPDATE plans SET state=? WHERE id=?", (state, plan_id))
 
+    def abandon_plan(self, chat_id: str) -> Plan | None:
+        """Atomically abandon the current plan and invalidate any pending proposal.
+
+        This is reserved for an explicit user command. It deliberately does not
+        try to reverse an already-executing reservation or a confirmed outcome.
+        """
+        plan = self.get_plan(chat_id)
+        if plan is None or plan.state in ("DONE", "ABANDONED", "EXECUTING"):
+            return None
+        facts = asdict(plan.facts)
+        facts["abandoned"] = True
+        with self._db() as db:
+            db.execute("UPDATE proposals SET status='stale' WHERE plan_id=? AND status='pending'",
+                       (plan.id,))
+            db.execute("""UPDATE outbox SET status='canceled' WHERE kind='proposal'
+                AND ref_id IN (SELECT id FROM proposals WHERE plan_id=?)
+                AND status IN ('pending','failed')""", (plan.id,))
+            db.execute("DELETE FROM availability_reports WHERE plan_id=?", (plan.id,))
+            db.execute("DELETE FROM availability_requests WHERE plan_id=?", (plan.id,))
+            db.execute("""UPDATE plans SET version=version+1, facts=?, state='ABANDONED',
+                pending_proposal_id=NULL, last_intervention_version=version+1 WHERE id=?""",
+                       (json.dumps(facts, sort_keys=True), plan.id))
+        return self.get_plan(chat_id)
+
     def mark_intervened(self, plan_id: str, version: int, when: datetime):
         with self._db() as db:
             db.execute("UPDATE plans SET last_intervention_version=? WHERE id=? AND version=?",

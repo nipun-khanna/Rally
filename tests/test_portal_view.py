@@ -63,6 +63,12 @@ class PortalViewTests(unittest.TestCase):
         self.assertIn("Brunch", page)
         self.assertNotIn('span class="plan-state', page)
 
+    def test_canceled_plan_has_a_visible_canceled_status(self):
+        page = render_portal({"plans": [{"title": "Brunch", "state": "Canceled",
+                                          "details": ["Canceled in the group chat."]}]})
+        self.assertIn("Canceled", page)
+        self.assertIn("Canceled in the group chat.", page)
+
     def test_multiple_plans_get_the_horizontal_stack_class(self):
         page = render_portal({"plans": [{"title": "Brunch"}, {"title": "Dinner"}]})
         self.assertIn('class="plan-list stack"', page)

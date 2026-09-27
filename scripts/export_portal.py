@@ -14,14 +14,17 @@ import shutil
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, parse_qs
 
-from app.portal_data import build_portal_data
+from app.knowledge import KnowledgeStore
+from app.portal_data import build_knowledge_data, build_portal_data
 from app.portal_store import PortalStore
-from app.portal_view import render_portal
+from app.portal_view import render_knowledge, render_portal
 from app.store import Store
 
 
 LANDING = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rally</title><body style="font:16px -apple-system,sans-serif;max-width:40rem;margin:12vh auto;padding:1rem"><h1>Rally</h1><p>Ask Rally in your group chat for your private page link.</p></body></html>'
+CHAT_FUNCTION = Path(__file__).parent / "portal_api" / "chat.js"
 VERCEL_CONFIG = {
+    "functions": {"api/chat.js": {"includeFiles": "*/kb.json", "maxDuration": 30}},
     "headers": [
         {"source": "/(.*)", "headers": [
             {"key": "X-Content-Type-Options", "value": "nosniff"},
@@ -69,6 +72,9 @@ def export_portal(database_path: str | Path, media_root: str | Path,
     (output / "index.html").write_text(LANDING, encoding="utf-8")
     (output / ".vercelignore").write_text(".env*\n.vercel\n", encoding="utf-8")
     (output / "vercel.json").write_text(json.dumps(VERCEL_CONFIG), encoding="utf-8")
+    (output / "api").mkdir()
+    shutil.copyfile(CHAT_FUNCTION, output / "api" / "chat.js")
+    knowledge_store = KnowledgeStore(database_path)
     portal_store = PortalStore(database_path)
     # Read selections without constructing a service or recovering in-flight sends.
     with portal_store._db() as db:
@@ -147,6 +153,16 @@ def export_portal(database_path: str | Path, media_root: str | Path,
                         output_file.write(",")
                     json.dump(dict(row), output_file, ensure_ascii=False)
                 output_file.write("]")
+        if group["sections"].get("knowledge", True):
+            overview = build_portal_data(service, portal_store, group, owner_name=owner_name)
+            kb = build_knowledge_data(portal_store, knowledge_store, group, owner_name=owner_name,
+                                      overview=overview)
+            (target / "knowledge").mkdir(exist_ok=True)
+            (target / "knowledge" / "index.html").write_text(render_knowledge(kb), encoding="utf-8")
+            (target / "kb.json").write_text(json.dumps(
+                {k: kb[k] for k in ("title", "people", "group", "links", "members", "analytics", "plans")},
+                ensure_ascii=False), encoding="utf-8")
+            summary["pages"] += 1
         summary["groups"] += 1
     return summary
 

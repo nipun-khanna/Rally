@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 _STATE_LABELS = {"SPARK": "", "INTEREST": "",
                  "ALIGNMENT": "Picking details", "BLOCKED": "Needs input",
-                 "READY": "Ready to book", "EXECUTING": "Booking", "DONE": "Confirmed"}
+                 "READY": "Ready to book", "EXECUTING": "Booking", "DONE": "Confirmed",
+                 "ABANDONED": "Canceled"}
 
 
 def _human_date(date_str: str, today: "datetime.date") -> str:
@@ -59,11 +60,11 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
     plans = []
     today = datetime.now(timezone.utc).date().isoformat()
     for plan in service.store.plans_for_chat(chat_id):
-        if plan.state == "ABANDONED":
-            continue
         if plan.facts.date and plan.facts.date < today and plan.state == "DONE":
             continue
         details = []
+        if plan.state == "ABANDONED":
+            details.append("Canceled in the group chat.")
         proposal = service.store.latest_proposal(plan.id)
         venue = None
         if proposal:
@@ -143,10 +144,45 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
     if len(raw_messages) == 100:
         cursor = raw_messages[-1]["sent_at"] + "|" + raw_messages[-1]["message_id"]
         older_url = f"/{quote(group_id)}?before={quote(cursor, safe='')}"
-    return {"title": group["title"] or "Group chat", "members": list(labels.values()),
+    return {"title": group["title"] or "Group chat", "group_id": group_id, "members": list(labels.values()),
             "theme": group["theme"], "messages": messages, "plans": plans,
             "analytics": analytics, "member_stats": member_stats, "actions": actions,
             "import_status": {"state": status["status"], "imported": status["imported_count"]},
             "settings": group["sections"], "historical_results": historical_results,
             "historical_query": old_plan_query, "historical_error": historical_error,
             "older_url": older_url}
+
+
+_CATEGORY_LABELS = {"food": "Food", "dietary": "Dietary", "activities": "Activities",
+                    "personality": "Personality", "dates": "Dates", "places": "Places",
+                    "gifts": "Gift ideas", "likes": "Likes", "dislikes": "Not into",
+                    "other": "Other"}
+
+
+def build_knowledge_data(portal_store, knowledge_store, group: dict, *, owner_name: str = "",
+                         overview: dict | None = None) -> dict:
+    """People-first view of the group KB. Never includes message ids or phone numbers."""
+    from app.knowledge import CATEGORIES, GROUP_SUBJECT
+    chat_id = group["chat_id"]
+    names = {m["sender_id"]: m["display_name"] for m in portal_store.members(chat_id)}
+    names.setdefault("local-imessage-account", owner_name.strip() or "You")
+    by_subject: dict[str, dict[str, list[str]]] = {}
+    for fact in knowledge_store.facts(chat_id):
+        by_subject.setdefault(fact["subject_id"], {}).setdefault(fact["category"], []).append(fact["fact"])
+
+    def grouped(subject: str) -> list[dict]:
+        cats = by_subject.get(subject, {})
+        return [{"label": _CATEGORY_LABELS[c], "facts": cats[c]} for c in CATEGORIES if cats.get(c)]
+
+    people = [{"name": names[s], "sections": grouped(s)}
+              for s in sorted((s for s in by_subject if s in names), key=lambda s: names[s].casefold())]
+    links = [{"a": names.get(l["member_a"]), "b": names.get(l["member_b"]), "shared": l["shared"]}
+             for l in knowledge_store.links(chat_id)
+             if l["member_a"] in names and l["member_b"] in names]
+    overview = overview or {}
+    return {"title": group["title"] or "Group chat", "group_id": group["public_id"],
+            "people": people, "group": grouped(GROUP_SUBJECT), "links": links,
+            "members": sorted(set(names.values()), key=str.casefold),
+            "analytics": overview.get("analytics") or {},
+            "plans": [{k: p.get(k) for k in ("title", "date_label", "time_label", "location")}
+                      for p in overview.get("plans") or []]}
