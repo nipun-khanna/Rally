@@ -76,7 +76,7 @@ def _service(tmp_path, agent=None, defer_heavy_work=False):
 
 def test_direct_call_related_followup_unrelated_and_expiry(tmp_path):
     service, sent, reactions, agent = _service(tmp_path)
-    assert service.receive(ChatMessage("d1", HACK, "nick", "Rally, recap dinner?", NOW))
+    assert service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     assert sent[-1][1] == "here is the recap."
     assert reactions[:2] == [(HACK, "d1", "👀"), (HACK, "d1", "like")]
     assert service._typing_events == [(HACK, True), (HACK, False)]
@@ -97,7 +97,7 @@ def test_direct_call_related_followup_unrelated_and_expiry(tmp_path):
     assert service.receive(ChatMessage("u2", HACK, "maya", "same restaurant?", NOW + timedelta(minutes=3)))
     assert len(sent) == before
 
-    service.receive(ChatMessage("d2", HACK, "nick", "Rally, recap again?", NOW + timedelta(minutes=4)))
+    service.receive(ChatMessage("d2", HACK, "nick", "Hey Rally, where should we eat now?", NOW + timedelta(minutes=4)))
     stale = ChatMessage("s1", HACK, "sarah", "same restaurant?", NOW + timedelta(minutes=10))
     before = len(sent)
     service.receive(stale)
@@ -129,17 +129,17 @@ def test_cross_chat_restart_duplicate_and_caps(tmp_path):
 
 def test_forget_safety_reaction_and_command_precedence(tmp_path):
     service, sent, reactions, agent = _service(tmp_path)
-    service.receive(ChatMessage("d1", HACK, "nick", "Rally, recap?", NOW))
+    service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     service.receive(ChatMessage("fgt", HACK, "nick", "Rally, forget food.preference", NOW + timedelta(seconds=5)))
     assert service.group_memory.list_facts(HACK) == []
     assert "forgot" in sent[-1][1].lower()
 
-    service.receive(ChatMessage("d2", HACK, "nick", "Rally, recap?", NOW + timedelta(seconds=6)))
+    service.receive(ChatMessage("d2", HACK, "nick", "Hey Rally, where should we eat?", NOW + timedelta(seconds=6)))
     service.receive(ChatMessage("fgt2", HACK, "nick", "Rally, forget the group prefers ramen",
                                 NOW + timedelta(seconds=7)))
     assert service.group_memory.list_facts(HACK) == []
     assert "forgot" in sent[-1][1].lower()
-    service.receive(ChatMessage("d3", HACK, "nick", "Rally, recap the dinner pick?",
+    service.receive(ChatMessage("d3", HACK, "nick", "Hey Rally, where should we eat tonight?",
                                 NOW + timedelta(seconds=25)))
     service.receive(ChatMessage("fgt3", HACK, "nick", "Rally, forget the",
                                 NOW + timedelta(seconds=26)))
@@ -182,7 +182,7 @@ def test_closed_turn_does_not_coalesce_a_new_direct_call(tmp_path):
 
 def test_forget_does_not_delete_on_substring_match(tmp_path):
     service, sent, reactions, agent = _service(tmp_path)
-    service.receive(ChatMessage("d1", HACK, "nick", "Rally, recap?", NOW))
+    service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     assert service.group_memory.list_facts(HACK)
     service.receive(ChatMessage("fgt", HACK, "nick", "Rally, forget the", NOW + timedelta(seconds=5)))
     assert service.group_memory.list_facts(HACK)
@@ -462,10 +462,10 @@ def test_second_direct_call_does_not_wait_on_extract(tmp_path):
 
     agent = SlowExtract()
     service, sent, reactions, _ = _service(tmp_path, agent=agent, defer_heavy_work=True)
-    assert service.receive(ChatMessage("d1", HACK, "nick", "Rally, recap?", NOW))
+    assert service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     assert started.wait(1)
     begun = time.perf_counter()
-    assert service.receive(ChatMessage("d2", HACK, "nick", "Rally, recap again?",
+    assert service.receive(ChatMessage("d2", HACK, "nick", "Hey Rally, what time works?",
                                        NOW + timedelta(seconds=30)))
     assert time.perf_counter() - begun < 0.4
     assert sent[-1][1] == "here is the recap."
@@ -474,12 +474,12 @@ def test_second_direct_call_does_not_wait_on_extract(tmp_path):
 
 def test_conversation_sees_prior_rally_reply_and_proposal(tmp_path):
     service, sent, reactions, agent = _service(tmp_path)
-    service.receive(ChatMessage("d1", HACK, "nick", "Rally, recap?", NOW))
+    service.receive(ChatMessage("d1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     plan = service.store.get_plan(HACK)
     proposal = Proposal("p1", plan.id, plan.version, "v1", "Ramen House", "1 Main",
                         "2026-09-27", "20:00", 2, "pending")
     service.store.save_proposal(proposal)
-    service.receive(ChatMessage("d2", HACK, "nick", "Rally, recap dinner?",
+    service.receive(ChatMessage("d2", HACK, "nick", "Hey Rally, is ramen still the pick?",
                                 NOW + timedelta(seconds=30)))
     later = agent.seen_messages[-1]
     assert any(item.is_from_rally and "here is the recap" in item.text for item in later)
@@ -492,5 +492,5 @@ def test_completion_uses_the_chosen_tapback(tmp_path, kind):
     agent = ConversationAgent()
     agent.reaction = kind
     service, sent, reactions, _ = _service(tmp_path, agent=agent)
-    service.receive(ChatMessage("r1", HACK, "nick", "Rally, recap?", NOW))
+    service.receive(ChatMessage("r1", HACK, "nick", "Hey Rally, where should we eat?", NOW))
     assert reactions == [(HACK, "r1", "👀"), (HACK, "r1", kind)]

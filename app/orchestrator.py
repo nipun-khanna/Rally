@@ -678,7 +678,7 @@ class RallyService:
             self.store.mark_processed(message.message_id)
             return True
         memory_context = self.group_memory.prompt_context(message.chat_id, limit=12) if self.group_memory else ""
-        if direct_call and self._can_recap_locally(message, plan):
+        if direct_call and self._has_local_reply(message, plan):
             text = self._local_decision_reply(
                 plan, messages, memory_context, request=message.text)
             self._send_group_reply(message, text, allow_flood=False)
@@ -780,14 +780,11 @@ class RallyService:
             message=speaker.answer_direct(message.text, facts, thread),
         )
 
-    def _can_recap_locally(self, message: ChatMessage, plan) -> bool:
-        if not _RECAP_ASK.search(message.text or ""):
-            return False
+    def _has_local_reply(self, message: ChatMessage, plan) -> bool:
+        if _RECAP_ASK.search(message.text or ""):
+            return True
         facts = plan.facts if plan else None
-        if not facts or not facts.activity:
-            return False
-        return any((facts.date, facts.time, facts.location, facts.party_size,
-                    facts.preferred_cuisines, facts.blockers))
+        return _named_option_pick(message.text or "", facts) is not None
 
     def _local_decision_reply(self, plan, messages, memory_context: str = "",
                              request: str = "") -> str:
@@ -892,6 +889,12 @@ class RallyService:
         else:
             self._react(message, None)
 
+    def _side_effect(self, fn):
+        if self.defer_heavy_work:
+            self._executor().submit(fn)
+            return
+        fn()
+
     def _react(self, message: ChatMessage, reaction: str | None):
         if not self.react_fn:
             return
@@ -903,21 +906,28 @@ class RallyService:
             payload = current if current.startswith("-") else f"-{current}"
         if payload == current:
             return
-        try:
-            self.react_fn(message.chat_id, message.message_id, payload)
-        except Exception as exc:
-            _log_scheduled_failure("reaction", exc)
-            return
         if self.group_turns:
             self.group_turns.remember_reaction(message.message_id, reaction)
+
+        def run():
+            try:
+                self.react_fn(message.chat_id, message.message_id, payload)
+            except Exception as exc:
+                _log_scheduled_failure("reaction", exc)
+
+        self._side_effect(run)
 
     def _set_typing(self, message: ChatMessage, typing: bool):
         if not self.typing_fn:
             return
-        try:
-            self.typing_fn(message.chat_id, typing)
-        except Exception as exc:
-            _log_scheduled_failure("typing", exc)
+
+        def run():
+            try:
+                self.typing_fn(message.chat_id, typing)
+            except Exception as exc:
+                _log_scheduled_failure("typing", exc)
+
+        self._side_effect(run)
 
     def _learn_from_chat(self, message: ChatMessage, messages):
         if (not self.group_memory or message.message_id in self._remembered_ids

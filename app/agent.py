@@ -18,7 +18,7 @@ from app.reactions import completion_reaction
 from app.tone import group_tone
 
 logger = logging.getLogger(__name__)
-CONVERSATION_DECISION_TIMEOUT = 4
+CONVERSATION_DECISION_TIMEOUT = 2
 DEFAULT_GROK_TIMEOUT = 10
 
 

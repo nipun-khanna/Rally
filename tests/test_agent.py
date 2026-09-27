@@ -50,7 +50,7 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(GrokClient('key', extraction_timeout=90).answer_direct('Rally hello', None, self.messages), 'Hello')
         # wrapped through decide_conversation; fail over to local recap before a hang
         self.assertEqual(post.call_args.kwargs['timeout'], CONVERSATION_DECISION_TIMEOUT)
-        self.assertEqual(CONVERSATION_DECISION_TIMEOUT, 4)
+        self.assertEqual(CONVERSATION_DECISION_TIMEOUT, 2)
 
     def test_extraction_timeout_configuration_is_bounded(self):
         for timeout in (0, 121, float('nan')):

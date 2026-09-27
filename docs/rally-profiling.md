@@ -22,7 +22,7 @@ Local FakeAgent, 12-message seed, `defer_heavy_work=True`:
 | Sync extract 200 ms (`defer=False`) | **214 ms** | n/a (on request) |
 | Deferred extract 200 ms | **11 ms** | 208 ms |
 | Simulated live (decide 800 + send 350 + extract 1200) | **1286 ms** | 1210 ms |
-| Local recap (`_can_recap_locally`) | **8 ms**, 0 `decide_conversation` calls | extract still scheduled |
+| Local recap (`_has_local_reply`) | **8 ms**, 0 `decide_conversation` calls | extract still scheduled |
 
 cProfile on 8 instant receives (~101 ms total): after thread-join noise, top user time is `RallyService._handle_addressed_message` (~10 ms/call), then `_react` / `GroupTurnStore.remember_reaction`, then SQLite `commit`. `Store._db` opened ~34 times per receive. Local SQLite is not the live cost.
 
