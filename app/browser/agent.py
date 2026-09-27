@@ -291,13 +291,24 @@ class BrowserTaskService:
             return {"status": "duplicate"}
         logger.debug("task run begin %s", chat_label(context.chat_id))
         if self.vendor_agent is not None:
-            return self._run_vendor(context, request, row["id"])
+            try:
+                return self._run_vendor(context, request, row["id"])
+            except TimeoutError:
+                self.store.mark_status(row["id"], "uncertain")
+                return {"status": "uncertain",
+                        "answer": "The browser agent may have started. I did not retry it."}
+            except Exception:
+                logger.exception("vendor agent run failed %s; falling back to local",
+                                 chat_label(context.chat_id))
+        return self._run_local(context, request, row["id"])
+
+    def _run_local(self, context: ToolContext, request: str, row_id: str) -> dict:
         try:
             observation = self._observe(context)
         except Exception:
             logger.exception("task run observe unavailable %s",
                              chat_label(context.chat_id))
-            self.store.mark_status(row["id"], "failed")
+            self.store.mark_status(row_id, "failed")
             return {"status": "failed",
                     "answer": ("The browser crashed or is unavailable. "
                                "I restarted it — ask Rally again to open the site.")}
@@ -316,7 +327,7 @@ class BrowserTaskService:
                     chat_label(context.chat_id),
                     (time.monotonic() - step_started) * 1000,
                     safe_url(observation.url))
-                return self._finish_from_page(row["id"], observation, request)
+                return self._finish_from_page(row_id, observation, request)
             logger.debug(
                 "planner decision %s action=%s url=%s duration_ms=%.0f page=%s",
                 chat_label(context.chat_id), decision.action,
@@ -325,10 +336,10 @@ class BrowserTaskService:
             if decision.action == "complete":
                 if looks_like_reservation_request(request) or claims_booking_complete(
                         decision.answer):
-                    return self._waiting_result(row["id"], observation)
+                    return self._waiting_result(row_id, observation)
                 host, path = audit_url_parts(observation.url)
-                self.store.mark_status(row["id"], "complete", host=host, path=path)
-                self.store.audit(row["id"], "complete", "complete", host, path)
+                self.store.mark_status(row_id, "complete", host=host, path=path)
+                self.store.audit(row_id, "complete", "complete", host, path)
                 return {"status": "complete", "answer": decision.answer or "Done.",
                         "url": observation.url}
             action = decision_to_action(decision)
@@ -340,20 +351,20 @@ class BrowserTaskService:
                     self._act(context, action)
                 except Exception:
                     pass
-                return self._waiting_result(row["id"], observation)
+                return self._waiting_result(row_id, observation)
             if action["action"] == "fill" and is_secret_fill(
                     action.get("role"), action.get("name"), action.get("text")):
-                return self._waiting_result(row["id"], observation)
+                return self._waiting_result(row_id, observation)
             if action["action"] == "click_link" and is_commitment_control(
                     action.get("role"), action.get("name")):
                 digest = action_digest(observation, action)
                 code = secrets.token_hex(3).upper()
                 host, path = audit_url_parts(observation.url)
-                self.store.set_pending_action(row["id"], action, digest, host, path)
+                self.store.set_pending_action(row_id, action, digest, host, path)
                 self.store.create_approval(
-                    row["id"], code, digest,
+                    row_id, code, digest,
                     datetime.now(timezone.utc) + timedelta(minutes=10))
-                self.store.audit(row["id"], "approval", "awaiting_approval", host, path)
+                self.store.audit(row_id, "approval", "awaiting_approval", host, path)
                 return {
                     "status": "awaiting_approval",
                     "code": code,
@@ -364,44 +375,32 @@ class BrowserTaskService:
                 result = self._act(context, action)
             except TimeoutError:
                 host, path = audit_url_parts(observation.url)
-                self.store.mark_status(row["id"], "uncertain", host=host, path=path)
+                self.store.mark_status(row_id, "uncertain", host=host, path=path)
                 return {"status": "uncertain",
                         "answer": "The action may have started. I did not retry it."}
             except Exception as exc:
                 logger.exception("task act crashed %s %s",
                                  chat_label(context.chat_id), action_summary(action))
-                self.store.mark_status(row["id"], "failed")
+                self.store.mark_status(row_id, "failed")
                 detail = "crashed" if "crash" in str(exc).lower() else "unavailable"
                 return {"status": "failed",
                         "answer": (f"The browser crashed or is unavailable ({detail}). "
                                    "I restarted it — ask Rally again to open the site.")}
             if result.get("status") == "blocked":
                 if "credential" in (result.get("reason") or "").lower():
-                    return self._waiting_result(row["id"], observation)
-                self.store.mark_status(row["id"], "blocked")
+                    return self._waiting_result(row_id, observation)
+                self.store.mark_status(row_id, "blocked")
                 return {"status": "blocked",
                         "answer": result.get("reason") or "That browser action was blocked."}
             if result.get("status") == "waiting":
-                return self._waiting_result(row["id"], observation)
+                return self._waiting_result(row_id, observation)
             observation = self.runtime.observe(chat_id=context.chat_id, authenticated=True)
-        return self._finish_from_page(row["id"], observation, request)
+        return self._finish_from_page(row_id, observation, request)
 
     def _run_vendor(self, context: ToolContext, request: str, row_id: str) -> dict:
         logger.info("vendor agent run begin %s backend=browser-use",
                     chat_label(context.chat_id))
-        try:
-            result = self.vendor_agent.run_task(request)
-        except TimeoutError:
-            self.store.mark_status(row_id, "uncertain")
-            return {"status": "uncertain",
-                    "answer": "The browser agent may have started. I did not retry it."}
-        except Exception:
-            logger.exception("vendor agent run failed %s", chat_label(context.chat_id))
-            self.store.mark_status(row_id, "failed")
-            return {"status": "failed",
-                    "answer": ("The browser agent is unavailable. "
-                               "Ask Rally again after a Browser Use key is set, "
-                               "or I can retry on the local browser.")}
+        result = self.vendor_agent.run_task(request)
         answer = (result.get("answer") or "").strip()
         url = result.get("url") or ""
         waiting = bool(result.get("waiting")) or "WAIT_FOR_HUMAN" in answer

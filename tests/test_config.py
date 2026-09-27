@@ -27,6 +27,24 @@ def test_dotenv_keeps_unquoted_semicolon_guid_and_repairs_truncated_shell_env(tm
     assert repaired.browser_owner_chat_id == "any;-;+15555550100"
 
 
+def test_twilio_reservation_call_keys_are_optional():
+    settings = Settings.from_env({})
+    assert settings.twilio_account_sid == ""
+    assert settings.twilio_auth_token == ""
+    assert settings.twilio_from_number == ""
+    assert settings.callback_number == ""
+    assert settings.continuity_dial is True
+    filled = Settings.from_env({
+        "RALLY_TWILIO_ACCOUNT_SID": "ACsid",
+        "RALLY_TWILIO_AUTH_TOKEN": "token",
+        "RALLY_TWILIO_FROM_NUMBER": "+15551230000",
+        "RALLY_CALLBACK_NUMBER": "+15557654321",
+    })
+    assert filled.twilio_account_sid == "ACsid"
+    assert filled.twilio_from_number == "+15551230000"
+    assert filled.callback_number == "+15557654321"
+
+
 def test_browser_defaults_off_and_requires_private_owner():
     settings = Settings.from_env({})
     assert settings.browser_enabled is False

@@ -13,7 +13,9 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.browser.agent import looks_like_browser_request
 from app.group_safety import refusal_text
+from app.media import looks_like_image_request, looks_like_video_request
 from app.models import ChatMessage, PlanFacts
 from app.reactions import completion_reaction
 from app.tone import group_tone
@@ -39,13 +41,60 @@ _SHORT_QUESTION = re.compile(
     r"^\s*(?:what|how|why|where|when|who|which|can|could)\b",
     re.I,
 )
+_HELP_JOB = re.compile(
+    r"\b(?:what can you (?:do|help with)|what do you do|"
+    r"what are you (?:able to do|good for)|"
+    r"(?:your )?(?:capabilities|commands))\b|"
+    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay|ask)[,\s]+)?@?rally\b[\s,:!\-]*"
+    r"(?:help(?:\s+me)?(?:\s+out)?)\s*[?.!]*\s*$",
+    re.I,
+)
+_DASHBOARD_JOB = re.compile(
+    r"\b(?:admin\s+dashboard|(?:send(?:\s+me)?|open|share)\s+(?:the\s+)?"
+    r"(?:admin\s+)?dashboard|(?:the\s+)?dashboard(?:\s+link)?)\b",
+    re.I,
+)
+_RESTAURANT_JOB = re.compile(
+    r"\b(where should we eat|where to eat|restaurants?|recommend\w*\s+(?:a\s+)?"
+    r"(?:place|spot|restaurant)|food rec|pick a (?:spot|place|restaurant))\b",
+    re.I,
+)
+_VOICE_JOB = re.compile(
+    r"\b(?:call|phone|dial)\b.+\b(?:restaurant|spot|place|them|venue)\b|"
+    r"\b(?:call|phone|dial)\s+\+?1?[\s.-]*\(?\d{3}\)?"
+    r"|"
+    r"\bvoice call\b|"
+    r"\bphone app\b",
+    re.I,
+)
 
 
 def _conversation_job(request: str) -> str:
+    """Latest-message intent wins. Never a standing plan-only brief."""
     text = request or ""
+    if looks_like_image_request(text):
+        return ("the backend will generate and attach an image; do not recap "
+                "or refuse an ordinary draw/pic ask")
+    if looks_like_video_request(text):
+        return ("the backend will generate or send a verified video/link; "
+                "do not recap or invent a dead url")
+    if _HELP_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("briefly list Rally's real capabilities; do not recap the plan")
+    if _DASHBOARD_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("share the public dashboard rallyplans.vercel.app; never an "
+                "admin token; do not recap")
+    if looks_like_browser_request(text) and not _RECAP_JOB.search(text):
+        return ("this is a browser task; do not recap; the backend opens sites, "
+                "searches, and fills public forms, then waits at sign-in")
+    if _VOICE_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("Grok Voice can call a restaurant for a reservation; do not "
+                "claim the table is booked; do not recap")
     if _RESERVATION_JOB.search(text) and not _RECAP_JOB.search(text):
-        return ("acknowledge any venue they picked; say you cannot book; "
-                "do not recap or list unrelated questions")
+        return ("acknowledge any venue they picked; you cannot book over text "
+                "alone — mention the browser or a voice call; do not recap")
+    if _RESTAURANT_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("pick a specific restaurant with a one-line why; not a booking; "
+                "do not recap")
     if _QUESTION_JOB.search(text):
         return ("answer the latest question only; do not recap the plan or "
                 "list other messages as plan facts")
@@ -54,8 +103,8 @@ def _conversation_job(request: str) -> str:
     if "?" in text or _SHORT_QUESTION.match(text):
         return ("answer the latest question only; do not recap the plan or "
                 "list other messages as plan facts")
-    return ("answer the latest request; recap the plan only if they asked for "
-            "a recap or the plan")
+    return ("answer the latest request; you are not plan-only; recap the plan "
+            "only if they asked for a recap or the plan")
 
 
 class Extracted(BaseModel):
@@ -382,8 +431,9 @@ class GrokClient:
         )
         prompt = (
             "You are Rally — a casual, slightly funny friend in this iMessage group, not a "
-            "corporate safety bot and not a concierge. Return one JSON decision that helps the "
-            "group decide what to do, where, when, who, and the next concrete step. "
+            "corporate safety bot and not a concierge. Return one JSON decision. The latest "
+            "human request is the job — that intent wins over older plan talk. You are not "
+            "plan-only. "
             f"The group tone is {tone}. Unless the tone is formal, be casual, slangy, and "
             "a little unhinged-funny — never a bully. Do not insult the group, call people "
             "cowards, or dunk on them. Take a side when it helps. Be useful first. Neutral "
@@ -391,6 +441,16 @@ class GrokClient:
             "formal, write formally. "
             "Do not imitate a specific person. "
             f"{relevance} "
+            "Rally's real tools, fail-closed on allowlisted chats after a Rally ping or "
+            "during a 5-minute turn: recap / plan / conflicts / forget exact facts / Q&A "
+            "on this thread including pre-join history; pick a restaurant when asked "
+            "(cannot book over text alone — the backend can browse or try a Grok Voice "
+            "call for a reservation); public dashboard rallyplans.vercel.app, never an "
+            "admin token; local or Browser Use browser to search, open sites, fill public "
+            "forms, and walk a reservation until sign-in then wait for a human; Grok "
+            "images drawn and sent as iMessage attachments; generate or send a verified "
+            "video or https link; stall revival and a nicer voice. Do not refuse or recap "
+            "instead of using those tools. "
             "Human messages are the primary evidence. The plan object can be empty or stale; "
             "believe the chat. If someone already stated a time, place, party size, cuisine, "
             "or constraint in chat or memory, treat it as known. Only call a detail unknown when "
@@ -398,6 +458,8 @@ class GrokClient:
             "Answer the latest human request. If it is a question, answer that question. "
             "Only recap when they asked for a recap or the plan. Never list unrelated "
             "questions as plan facts. "
+            "When they ask for a recap or the plan, help the group decide what, where, when, "
+            "who, and the next concrete step. "
             "A recap must name those concrete known details from recent human messages and "
             "the one decision still open. "
             "When people are choosing among options they already named, recommend one option "

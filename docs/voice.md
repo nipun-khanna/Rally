@@ -75,6 +75,51 @@ You: "Yeah, send it."
 Rally: (calls confirm_action) "Sent."
 ```
 
+## Restaurant reservation calls
+
+Allowlisted chats can ask Rally to **call the restaurant** and book a table.
+Grok Voice (`grok-voice-latest`) does the live back-and-forth. Rally then
+texts the group `booked`, `need confirm`, or `failed`. It will not say
+booked unless a live phone call produced a confirmation code.
+
+Example: `Hey Rally, call Taj and book for 4 at 8` (or the same ask during
+the five-minute Rally turn). Party size, time, name, and callback number
+come from the message, the current plan/proposal, or `RALLY_CALLBACK_NUMBER`.
+
+### Mac Phone call pipeline (no Twilio)
+
+`Hey Rally, call 7032004231` is one path:
+
+1. Open Phone.app with `tel://` (allowlisted number only).
+2. Rally clicks **Click to Call** itself (green chip, top-right).
+3. Attach Grok Voice on this Mac (`grok-voice-latest`): mic in, speakers out.
+
+Nothing is booked unless a live host gives a real confirmation. Cards are never invented. iPhone Mirroring cannot originate calls — do not use it.
+
+Without a number (or Continuity off), Rally uses the mock-host loopback and still never completes a booking.
+
+Dev helper: `scripts/place_test_call.py --method phone` (or `--dry-run`).
+
+### What is needed to actually dial
+
+True PSTN outbound uses Twilio:
+
+| Key | Role |
+|---|---|
+| `RALLY_TWILIO_ACCOUNT_SID` | Twilio account |
+| `RALLY_TWILIO_AUTH_TOKEN` | Twilio auth |
+| `RALLY_TWILIO_FROM_NUMBER` | Caller ID Twilio number (E.164) |
+| `RALLY_CALLBACK_NUMBER` | Number Rally gives the restaurant |
+| `RALLY_APP_URL` | Public **https** origin Twilio can reach for `/voice/call/twiml` and `wss://…/voice/call/stream` |
+
+`127.0.0.1` / localhost cannot receive Twilio media. Point `RALLY_APP_URL` at
+a public HTTPS tunnel (or deployed host), include the restaurant's number in
+the text (Rally will not invent one), then reload 8770.
+
+The Mac loopback page (`/voice/call?token=…`) uses the same ephemeral-token
+path as `/voice`, with reservation instructions and `wait_for_human` /
+`report_reservation_result` tools.
+
 ## Known limitations (unverified without a live browser + microphone)
 
 This was built and tested against the real relationship/plan/orchestrator

@@ -51,6 +51,28 @@ def mint_ephemeral_token(xai_api_key: str, *, expires_after_seconds: int = 1800)
     return token
 
 
+_LIVE_LISTEN_INSTRUCTIONS = (
+    "You are Rally on a live phone call. Listen to every word and answer "
+    "immediately in a short spoken reply. If the caller says their name, "
+    "repeat it back so they know you heard them. Do not talk about "
+    "restaurants, reservations, or payment unless they ask."
+)
+
+
+_RESERVATION_INSTRUCTIONS = (
+    "You are Rally calling a restaurant to book a table for a group. "
+    "Speak like a polite guest on a phone. Use only the party size, time, "
+    "guest name, and callback number you were given. "
+    "If the host asks for a credit card, deposit, or any payment detail, "
+    "immediately call wait_for_human. Never invent, guess, or speak a card "
+    "number, CVV, or expiration date. "
+    "Do not claim the table is booked unless the host gave a real confirmation "
+    "code on this live call. Then call report_reservation_result. "
+    "If they cannot take the reservation, or must call back, report "
+    "need_confirm or failed — never booked."
+)
+
+
 def build_session_payload(*, tools: list[dict]) -> dict:
     return {
         'instructions': _INSTRUCTIONS,
@@ -65,3 +87,35 @@ def build_session_payload(*, tools: list[dict]) -> dict:
             'output': {'format': {'type': 'audio/pcm', 'rate': 24000}, 'transport': 'json'},
         },
     }
+
+
+def build_reservation_session_payload(*, tools: list[dict], brief: dict | None = None) -> dict:
+    extra = ""
+    if brief:
+        extra = (
+            f" Venue: {brief.get('venue') or 'unknown'}."
+            f" Party: {brief.get('party_size') or 'unknown'}."
+            f" Time: {brief.get('time') or 'unknown'}."
+            f" Name: {brief.get('guest_name') or 'the group'}."
+            f" Callback: {brief.get('callback_number') or 'do not invent a number'}."
+        )
+    payload = build_session_payload(tools=tools)
+    if brief and (brief.get('venue') or brief.get('party_size')):
+        payload['instructions'] = _RESERVATION_INSTRUCTIONS + extra
+    else:
+        payload['instructions'] = _LIVE_LISTEN_INSTRUCTIONS
+    payload['turn_detection'] = {
+        'type': 'server_vad',
+        'create_response': True,
+        'interrupt_response': True,
+    }
+    # Mac Phone/BlackHole path is PCM16 @ 48 kHz, not Twilio μ-law 8 kHz.
+    payload['audio'] = {
+        'input': {
+            'format': {'type': 'audio/pcm', 'rate': 48000},
+            'transport': 'json',
+            'transcription': {'model': 'grok-transcribe'},
+        },
+        'output': {'format': {'type': 'audio/pcm', 'rate': 48000}, 'transport': 'json'},
+    }
+    return payload

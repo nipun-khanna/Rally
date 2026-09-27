@@ -70,6 +70,9 @@ class VoiceToolRegistry:
             raise ValueError('Duplicate voice tool name')
         self._tools[tool.name] = tool
 
+    def has(self, name: str) -> bool:
+        return name in self._tools
+
     def session_tools(self) -> list[dict]:
         return [{'type': 'function', 'name': tool.name, 'description': tool.description,
                  'parameters': tool.parameters} for tool in self._tools.values()]

@@ -20,6 +20,7 @@ from app.bluebubbles import DeliveryUncertainError
 from app.group_memory import eligible_fact
 from app.group_safety import (forget_phrase, illegal_assistance_request,
                               parse_forget_command, refusal_text)
+from app.browser.agent import looks_like_browser_request
 from app.media import (
     image_prompt,
     looks_like_image_request,
@@ -152,7 +153,30 @@ _CONSTRAINT_LINE = re.compile(
     r"\b(isolat\w*|allergic|can't|cannot|won't make|running late)\b",
     re.I,
 )
+_HELP_ASK = re.compile(
+    r"\b(?:what can you (?:do|help with)|what do you do|"
+    r"what are you (?:able to do|good for)|"
+    r"(?:your )?(?:capabilities|commands))\b",
+    re.I,
+)
+_BARE_HELP = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay|ask)[,\s]+)?(?:@?rally\b[\s,:!\-]*)?"
+    r"(?:help(?:\s+me)?(?:\s+out)?)\s*[?.!]*\s*$",
+    re.I,
+)
 _NO_ANSWER = re.compile(r"^\s*no(?:\s+|_)answer\s*$", re.I)
+HELP_REPLY = (
+    "i recap the plan (including pre-join history), flag conflicts, forget a "
+    "fact if you ask, and answer questions on this thread. i can pick a "
+    "restaurant — i can't book a reservation over text alone, and i will not "
+    "call restaurants. i can start a call only to the allowlisted test number "
+    "on the mac phone app, click call myself, and put grok voice on "
+    "this computer's mic and speakers. "
+    "public dashboard is rallyplans.vercel.app (never an admin token). i can "
+    "use the browser, search, and fill public forms. i can draw or send images, and "
+    "generate or send a real video. ping me and i stay in the convo for 5 min; "
+    "i'll nudge if y'all stall."
+)
 _REPEAT_TEMPLATE = re.compile(
     r"^(?:here's the plan|nothing locked yet)\b|still no spot",
     re.I,
@@ -204,6 +228,14 @@ def _linked_list_answer(text: str) -> str | None:
             "prev is the new head. that's the iterative reverse.")
 
 
+def looks_like_help_request(text: str) -> bool:
+    if not text or looks_like_image_request(text) or looks_like_video_request(text):
+        return False
+    if looks_like_browser_request(text) or _can_recap_locally(text):
+        return False
+    return bool(_HELP_ASK.search(text) or _BARE_HELP.match(text))
+
+
 def _reservation_reply(request: str, snap=None, facts=None) -> str:
     picked = _venue_choice(request)
     if not picked and snap:
@@ -213,8 +245,9 @@ def _reservation_reply(request: str, snap=None, facts=None) -> str:
     if picked:
         name = str(picked).split(",")[0].strip()
         return (f"{name} works — that's the spot. i can't actually book a "
-                "reservation.")
-    return "i can't actually book a reservation. pick a spot and i'll lock the name."
+                "reservation over text — ask me to open the site or try a voice call.")
+    return ("i can't actually book a reservation over text. pick a spot and "
+            "i'll lock the name, or ask me to open the site / try a voice call.")
 
 
 def _named_option_pick(request: str, facts) -> str | None:
@@ -270,6 +303,8 @@ def _worth_replying(text: str) -> bool:
     if not text or not text.strip():
         return False
     if looks_like_image_request(text) or looks_like_video_request(text):
+        return True
+    if looks_like_help_request(text):
         return True
     if (_can_recap_locally(text) or _restaurant_intent(text) or _PICK_ASK.search(text)
             or _TONE_Q.search(text) or _SONG_LIST.search(text) or _WHO_MADE.search(text)
@@ -873,7 +908,7 @@ class RallyService:
             incoming_stall=incoming_stall)
 
     def _maybe_revive_from_inbound(self, message: ChatMessage, plan) -> bool:
-        if plan is None or _idle_chatter(message.text) or not _stall_signal(message.text):
+        if plan is None or not _stall_signal(message.text):
             return False
         if not self._should_revive(plan, message.sent_at, incoming_stall=True):
             return False
@@ -895,11 +930,12 @@ class RallyService:
         if place and _FOOD_ACTIVITY.search((facts.activity or "") + " " + (snap.get("activity") or "")):
             text = self._recommend_restaurant(facts, messages, memory)
         elif cuisine:
-            text = (f"we're at {cuisine} / {when} / still no spot — "
-                    "want me to pick a restaurant that fits?")
+            text = (f"still no restaurant for {cuisine} {when}"
+                    f"{f' near {place}' if place else ''} — "
+                    "want me to pick one that fits?")
         else:
-            text = (f"the {facts.activity or 'plan'} is still open ({when}). "
-                    "want me to lock a spot?")
+            text = (f"{facts.activity or 'the plan'} is still open ({when}). "
+                    "want me to lock a time or spot?")
         if self._same_recent_outbound(plan.chat_id, text):
             self.store.mark_intervened(plan.id, plan.version, now)
             return False
@@ -1448,6 +1484,10 @@ class RallyService:
 
     def _has_local_reply(self, message: ChatMessage, plan) -> bool:
         text = message.text or ""
+        if looks_like_help_request(text):
+            return True
+        if looks_like_browser_request(text) and not _can_recap_locally(text):
+            return False
         if _can_recap_locally(text):
             return True
         facts = plan.facts if plan else None
@@ -1466,6 +1506,8 @@ class RallyService:
 
     def _local_decision_reply(self, plan, messages, memory_context: str = "",
                              request: str = "") -> str:
+        if looks_like_help_request(request):
+            return HELP_REPLY
         facts = plan.facts if plan else None
         picked = _named_option_pick(request, facts)
         if picked:

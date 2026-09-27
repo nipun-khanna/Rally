@@ -85,6 +85,11 @@ class Settings:
     browserbase_api_key: str = ""
     browserbase_project_id: str = ""
     browser_use_api_key: str = ""
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    callback_number: str = ""
+    continuity_dial: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, *,
@@ -222,6 +227,11 @@ class Settings:
             browserbase_api_key=browserbase_api_key,
             browserbase_project_id=browserbase_project_id,
             browser_use_api_key=browser_use_api_key,
+            twilio_account_sid=source.get("RALLY_TWILIO_ACCOUNT_SID", "").strip(),
+            twilio_auth_token=source.get("RALLY_TWILIO_AUTH_TOKEN", "").strip(),
+            twilio_from_number=source.get("RALLY_TWILIO_FROM_NUMBER", "").strip(),
+            callback_number=source.get("RALLY_CALLBACK_NUMBER", "").strip(),
+            continuity_dial=source.get("RALLY_CONTINUITY_DIAL", "1") == "1",
         )
 
 

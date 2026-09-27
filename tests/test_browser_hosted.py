@@ -111,9 +111,11 @@ def test_browser_use_client_runs_vendor_agent_and_omits_key_from_errors():
         if method == "POST":
             assert "WAIT_FOR_HUMAN" in body["task"]
             assert "example.com" in body["task"]
-            assert body["model"] == "grok-4.5"
+            assert "model" not in body
             return {"id": "run-1", "status": "running"}
-        return {"id": "run-1", "status": "finished",
+        if url.endswith("/status"):
+            return {"id": "run-1", "status": "completed"}
+        return {"id": "run-1", "status": "completed",
                 "result": "Example Domain", "url": "https://example.com"}
 
     client = BrowserUseClient("secret-use-key", transport=transport, sleeper=lambda _: None)
@@ -124,6 +126,7 @@ def test_browser_use_client_runs_vendor_agent_and_omits_key_from_errors():
     assert result["waiting"] is False
     assert calls[0][0] == "POST"
     assert calls[0][1].endswith("/api/v4/runs")
+    assert any(call[0] == "GET" and call[1].endswith("/api/v4/runs/run-1/status") for call in calls)
     assert any(call[0] == "GET" and call[1].endswith("/api/v4/runs/run-1") for call in calls)
     assert "secret-use-key" not in compose_browser_use_task("Open https://example.com")
 

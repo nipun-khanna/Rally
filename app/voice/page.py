@@ -14,7 +14,7 @@ event for diagnosis; it stays out of the way until expanded.
 """
 
 
-def render_voice_page(admin_token: str, voice_model: str) -> str:
+def render_voice_page(admin_token: str, voice_model: str, *, session_mode: str = "") -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Rally Voice</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -151,6 +151,7 @@ body {{
 <script>
 const ADMIN_TOKEN = {admin_token!r};
 const VOICE_MODEL = {voice_model!r};
+const SESSION_MODE = {session_mode!r};
 const orbWrap = document.getElementById('orbWrap');
 const captionEl = document.getElementById('caption');
 const dotEl = document.getElementById('dot');
@@ -320,7 +321,8 @@ async function start() {{
   setState('connecting', 'Connecting…');
   logLine('sys', 'requesting session');
   const resp = await fetch('/voice/session', {{method: 'POST',
-    headers: {{'X-Rally-Admin-Token': ADMIN_TOKEN}}}});
+    headers: {{'X-Rally-Admin-Token': ADMIN_TOKEN, 'Content-Type': 'application/json'}},
+    body: JSON.stringify({{mode: SESSION_MODE}})}});
   if (!resp.ok) {{
     logLine('err', 'session request failed: ' + resp.status);
     stopAll('Could not start (' + resp.status + ')');

@@ -151,6 +151,12 @@ def test_neutral_legal_discussion_is_not_a_local_refusal():
     assert "corporate" in system or "safety bot" in system
     assert "feral" not in system
     assert "deranged" not in system
+    assert "image" in system
+    assert "browser" in system
+    assert "dashboard" in system or "rallyplans.vercel.app" in system
+    assert "voice" in system
+    assert "latest" in system
+    assert "not plan-only" in system or "not a standing plan" in system
 
 
 def test_conversation_prompt_direct_call_requires_a_useful_message():
@@ -202,6 +208,28 @@ def test_question_payload_asks_for_an_answer_not_a_recap():
             "relevant": True, "safety": "ok", "message": None,
             "reaction": None, "memory_candidates": [],
         }).decide_conversation("Rally, recap?", None, MESSAGES, followup=False)
+
+
+def test_latest_message_job_is_not_plan_only_for_tools():
+    captured = []
+
+    def transport(payload):
+        captured.append(payload)
+        return {"relevant": True, "safety": "ok", "message": "on it.",
+                "reaction": "like", "memory_candidates": []}
+
+    client = GrokClient("key", transport=transport)
+    for text, needle in (
+        ("draw a cat", "image"),
+        ("open example.com", "browser"),
+        ("what can you do", "capabilit"),
+        ("send the dashboard", "dashboard"),
+    ):
+        captured.clear()
+        client.decide_conversation(text, None, MESSAGES)
+        user = captured[0]["messages"][1]["content"].casefold()
+        assert needle in user, text
+        assert user.count("help the group decide") == 0
 
 
 def test_conversation_payload_includes_rally_replies_without_extracting_them():

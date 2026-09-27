@@ -170,6 +170,22 @@ def test_vendor_agent_handles_search_open_and_reserve(tmp_path):
     assert runtime.actions == []
 
 
+def test_vendor_failure_falls_back_to_local_browser(tmp_path):
+    runtime = FakeRuntime()
+    vendor = FakeVendor(error=RuntimeError("Hosted browser request failed"))
+    service = BrowserTaskService(
+        runtime, BrowserStore(tmp_path / "r.sqlite3"),
+        lambda *a: {"action": "navigate", "url": "https://example.com/"},
+        settings(), vendor_agent=vendor)
+    opened = service.run(context(text="Hey Rally, open https://example.com",
+                                 message_id="m-fallback"),
+                         "Hey Rally, open https://example.com")
+    assert vendor.requests
+    assert runtime.actions[0]["action"] == "navigate"
+    assert opened["status"] in {"complete", "ok"} or opened.get("url") or runtime.page.url
+    assert "browser use key" not in opened.get("answer", "").lower()
+
+
 def test_reservation_waits_and_does_not_claim_booked(tmp_path):
     runtime = FakeRuntime()
     runtime.page = BrowserObservation(

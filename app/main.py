@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import Cookie, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Cookie, FastAPI, Header, HTTPException, Request, WebSocket
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from app.agent import GrokProviderError
 from app.bluebubbles import normalize_webhook
@@ -23,7 +23,10 @@ from app.portal_data import build_portal_data
 from app.portal_store import PortalStore
 from app.portal_view import render_portal
 from app.voice.page import render_voice_page
-from app.voice.session import VoiceSessionError, build_session_payload, mint_ephemeral_token
+from app.voice.session import (
+    VoiceSessionError, build_reservation_session_payload, build_session_payload,
+    mint_ephemeral_token,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +64,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
                voice_model: str | None = None, xai_api_key: str | None = None,
                voice_owner: str | None = None, browser_runtime=None,
                browser_inbound=None, browser_admin_token: str | None = None,
-               browser_enabled: bool = False) -> FastAPI:
+               browser_enabled: bool = False, reservation_call_inbound=None,
+               reservation_registry=None) -> FastAPI:
     settings = None
     if service is None:
         from app.config import Settings, build_service
@@ -129,8 +133,45 @@ def create_app(service=None, *, webhook_token: str | None = None,
                 service.send_fn,
                 allowed_chat_ids=settings.allowed_chat_ids,
                 group_turns=service.group_turns)
+        from app.voice.caller import ReservationCaller
+        from app.voice.continuity import ContinuityDialer
+        from app.voice.handler import ReservationCallInbound
+        from app.voice.reservation_tools import build_reservation_call_tools
+        from app.voice.telco import TwilioDialer
+        dialer = TwilioDialer(settings.twilio_account_sid, settings.twilio_auth_token,
+                              settings.twilio_from_number)
+        continuity = (
+            ContinuityDialer(method="phone", methods=("phone",))
+            if settings.continuity_dial else None)
+        reservation_caller = ReservationCaller(
+            plan_store=service.store, dialer=dialer if dialer.ready() else None,
+            app_url=settings.app_url, callback_number=settings.callback_number,
+            guest_name="" if settings.voice_owner == "local-imessage-account"
+            else settings.voice_owner,
+            continuity=continuity)
+        reservation_call_inbound = ReservationCallInbound(
+            reservation_caller, service.send_fn,
+            allowed_chat_ids=settings.allowed_chat_ids,
+            group_turns=service.group_turns)
+        reservation_registry = build_reservation_call_tools(reservation_caller)
+        if settings.xai_api_key:
+            from app.voice.bridge import LocalGrokVoice
+            reservation_caller.voice = LocalGrokVoice(
+                settings.xai_api_key, model=settings.voice_model,
+                tools=reservation_registry.session_tools())
     else:
         publish_enabled = False
+    if reservation_call_inbound is None:
+        from app.voice.caller import ReservationCaller
+        from app.voice.handler import ReservationCallInbound
+        reservation_call_inbound = ReservationCallInbound(
+            ReservationCaller(plan_store=service.store),
+            service.send_fn,
+            allowed_chat_ids=service.allowed_chat_ids,
+            group_turns=getattr(service, "group_turns", None))
+    if reservation_registry is None and reservation_call_inbound is not None:
+        from app.voice.reservation_tools import build_reservation_call_tools
+        reservation_registry = build_reservation_call_tools(reservation_call_inbound.caller)
     tick_seconds = tick_seconds or 60
     portal_store = portal_store or PortalStore(service.store.path)
     media_root = Path(media_root or service.store.path.parent / "portal_media")
@@ -306,6 +347,10 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.post("/webhooks/bluebubbles")
     def webhook(payload: dict, token: str | None = None):
         authorize(token)
+        if reservation_call_inbound is not None:
+            handled_call = reservation_call_inbound.try_receive(payload)
+            if handled_call is not None:
+                return {"accepted": handled_call}
         if browser_inbound is not None:
             handled = browser_inbound.try_receive(payload)
             if handled is not None:
@@ -407,30 +452,92 @@ def create_app(service=None, *, webhook_token: str | None = None,
             raise HTTPException(404, 'Voice is not enabled')
         return HTMLResponse(render_voice_page(admin_token or '', voice_model or 'grok-voice-latest'))
 
+    @app.get('/voice/call', response_class=HTMLResponse)
+    def voice_call_page(token: str | None = None):
+        authorize_admin(token)
+        if voice_registry is None and reservation_registry is None:
+            raise HTTPException(404, 'Voice is not enabled')
+        return HTMLResponse(render_voice_page(
+            admin_token or '', voice_model or 'grok-voice-latest',
+            session_mode='reservation'))
+
     @app.post('/voice/session')
-    def voice_session(x_rally_admin_token: str | None = Header(default=None)):
+    async def voice_session(request: Request,
+                            x_rally_admin_token: str | None = Header(default=None)):
         authorize_admin(x_rally_admin_token)
-        if voice_registry is None:
+        mode = ''
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                mode = str(body.get('mode') or '')
+        except Exception:
+            mode = ''
+        reservation = mode == 'reservation' and reservation_registry is not None
+        if voice_registry is None and not reservation:
             raise HTTPException(404, 'Voice is not enabled')
         try:
             ephemeral_token = mint_ephemeral_token(xai_api_key or '')
         except VoiceSessionError as exc:
             raise HTTPException(502, str(exc)) from None
-        return {'ephemeral_token': ephemeral_token,
-                'session': build_session_payload(tools=voice_registry.session_tools())}
+        if reservation:
+            brief = {}
+            caller = getattr(reservation_call_inbound, 'caller', None)
+            request_brief = getattr(caller, 'last_request', None) if caller else None
+            if request_brief is not None:
+                brief = {
+                    'venue': request_brief.venue,
+                    'party_size': request_brief.party_size,
+                    'time': request_brief.time,
+                    'guest_name': request_brief.guest_name,
+                    'callback_number': request_brief.callback_number,
+                }
+            session = build_reservation_session_payload(
+                tools=reservation_registry.session_tools(), brief=brief)
+        else:
+            session = build_session_payload(tools=voice_registry.session_tools())
+        return {'ephemeral_token': ephemeral_token, 'session': session}
 
     @app.post('/voice/tool')
     def voice_tool(payload: dict, x_rally_admin_token: str | None = Header(default=None)):
         authorize_admin(x_rally_admin_token)
-        if voice_registry is None:
-            raise HTTPException(404, 'Voice is not enabled')
         name, args = payload.get('name'), payload.get('args') or {}
         if not isinstance(name, str) or not isinstance(args, dict):
             raise HTTPException(400, 'Invalid tool call')
+        if reservation_registry is not None and reservation_registry.has(name):
+            try:
+                return {'result': reservation_registry.call(name, args)}
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from None
+        if voice_registry is None:
+            raise HTTPException(404, 'Voice is not enabled')
         try:
             return {'result': voice_registry.call(name, args)}
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
+
+    @app.api_route('/voice/call/twiml', methods=['GET', 'POST'])
+    def voice_call_twiml():
+        from app.voice.telco import TelcoError, stream_url_for, twiml_connect_stream
+        try:
+            xml = twiml_connect_stream(stream_url_for(app_url or ''))
+        except TelcoError as exc:
+            raise HTTPException(503, str(exc)) from None
+        return Response(content=xml, media_type='application/xml')
+
+    @app.websocket('/voice/call/stream')
+    async def voice_call_stream(websocket: WebSocket):
+        await websocket.accept()
+        try:
+            while True:
+                message = await websocket.receive_text()
+                if '"stop"' in message:
+                    break
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
     @app.get('/admin/groups', response_class=HTMLResponse)
     def admin_group_picker(token: str | None = None,
