@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Mapping
 
 from app.agent import GrokClient
-from app.bluebubbles import is_private_direct_chat, send_message
+from app.bluebubbles import is_private_direct_chat, send_attachment, send_message
+from app.media import extract_video_url, verify_video_url
 from app.history import BlueBubblesHistoryClient, planning_message_from_archive
 from app.group_memory import GroupMemoryStore
 from app.group_turns import GroupTurnStore
@@ -30,6 +31,7 @@ from app.adaptive.tools import build_default_registry
 from app.adaptive.generator import CapabilityDraft, CapabilityProposalGenerator
 from app.adaptive.proposals import CapabilityProposalStore
 from app.envfile import resolve_settings_env
+from app.dashboard_live import vercel_project_from_url
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class Settings:
     max_calendar_requests: int
     allowed_chat_ids: frozenset[str]
     app_url: str = ""
+    vercel_project: str = ""
     portal_publish_approved: bool = False
     history_enabled: bool = True
     grok_extraction_timeout: float = 60
@@ -65,6 +68,8 @@ class Settings:
     grok_reply_model: str = "grok-4.3"
     grok_reply_effort: str = "none"
     grok_reply_timeout: float = 25
+    grok_image_model: str = "grok-imagine-image-2.0"
+    grok_video_model: str = "grok-imagine-video-1.5"
     web_enabled: bool = False
     web_daily_limit: int = 0
     web_max_tool_calls: int = 3
@@ -82,6 +87,9 @@ class Settings:
     browser_download_path: Path = Path("data/browser/downloads")
     browser_max_actions: int = 6
     browser_max_text_chars: int = 6000
+    browserbase_api_key: str = ""
+    browserbase_project_id: str = ""
+    browser_use_api_key: str = ""
     owner_display_name: str = ""
 
     @classmethod
@@ -112,6 +120,12 @@ class Settings:
         supported_reply_efforts = ("none", "low", "medium", "high") if reply_model == "grok-4.3" else ("low", "medium", "high")
         if reply_effort not in supported_reply_efforts or not 1 <= reply_timeout <= 120:
             raise ValueError("Invalid Grok reply configuration")
+        image_model = source.get("RALLY_GROK_IMAGE_MODEL", "grok-imagine-image-2.0").strip()
+        video_model = source.get("RALLY_GROK_VIDEO_MODEL", "grok-imagine-video-1.5").strip()
+        if image_model not in ("grok-imagine-image-2.0",):
+            raise ValueError("Unsupported Grok image model")
+        if video_model not in ("grok-imagine-video-1.5",):
+            raise ValueError("Unsupported Grok video model")
         extraction_provider = source.get("RALLY_EXTRACTION_PROVIDER", "grok").lower()
         if stall_minutes < 1 or tick_seconds < 1 or not 1 <= max_requests <= 1000:
             raise ValueError("Invalid Rally interval or place request cap")
@@ -138,6 +152,12 @@ class Settings:
         browser_download_path = Path(source.get("RALLY_BROWSER_DOWNLOAD_PATH", "data/browser/downloads"))
         browser_max_actions = int(source.get("RALLY_BROWSER_MAX_ACTIONS", "6"))
         browser_max_text_chars = int(source.get("RALLY_BROWSER_MAX_TEXT_CHARS", "6000"))
+        browserbase_api_key = (source.get("RALLY_BROWSERBASE_API_KEY")
+                               or source.get("BROWSERBASE_API_KEY") or "").strip()
+        browserbase_project_id = (source.get("RALLY_BROWSERBASE_PROJECT_ID")
+                                  or source.get("BROWSERBASE_PROJECT_ID") or "").strip()
+        browser_use_api_key = (source.get("RALLY_BROWSER_USE_API_KEY")
+                               or source.get("BROWSER_USE_API_KEY") or "").strip()
         if browser_enabled:
             if not is_private_direct_chat(browser_owner_chat_id):
                 raise ValueError("Browser owner must be a private {service};-;{id} chat")
@@ -179,6 +199,10 @@ class Settings:
             allowed_chat_ids=frozenset(chat.strip() for chat in
                 source.get("RALLY_ALLOWED_CHAT_GUIDS", "").split(",") if chat.strip()),
             app_url=source.get("RALLY_APP_URL", ""),
+            vercel_project=(
+                source.get("RALLY_VERCEL_PROJECT", "").strip()
+                or (vercel_project_from_url(source.get("RALLY_APP_URL", "")) or "")
+            ),
             portal_publish_approved=source.get("RALLY_PORTAL_PUBLISH_APPROVED", "0") == "1",
             history_enabled=source.get("RALLY_HISTORY_ENABLED", "1") == "1",
             grok_extraction_timeout=extraction_timeout,
@@ -186,6 +210,8 @@ class Settings:
             grok_reply_model=reply_model,
             grok_reply_effort=reply_effort,
             grok_reply_timeout=reply_timeout,
+            grok_image_model=image_model,
+            grok_video_model=video_model,
             web_enabled=web_enabled,
             web_daily_limit=web_daily_limit,
             web_max_tool_calls=web_max_tool_calls,
@@ -203,6 +229,9 @@ class Settings:
             browser_download_path=browser_download_path,
             browser_max_actions=browser_max_actions,
             browser_max_text_chars=browser_max_text_chars,
+            browserbase_api_key=browserbase_api_key,
+            browserbase_project_id=browserbase_project_id,
+            browser_use_api_key=browser_use_api_key,
             owner_display_name=source.get("RALLY_OWNER_DISPLAY_NAME", "").strip(),
         )
 
@@ -212,7 +241,9 @@ def build_service(settings: Settings) -> RallyService:
     agent = GrokClient(settings.xai_api_key, settings.grok_model,
                        default_city=settings.default_city, time_zone=settings.time_zone,
                        extraction_timeout=settings.grok_extraction_timeout,
-                       extraction_reasoning_effort=settings.grok_extraction_effort)
+                       extraction_reasoning_effort=settings.grok_extraction_effort,
+                       image_model=settings.grok_image_model,
+                       video_model=settings.grok_video_model)
     reply_agent = GrokClient(settings.xai_api_key, settings.grok_reply_model,
                              default_city=settings.default_city, time_zone=settings.time_zone,
                              direct_reasoning_effort=settings.grok_reply_effort,
@@ -262,6 +293,22 @@ def build_service(settings: Settings) -> RallyService:
                             add_rally_signature(text),
                             selected_message_guid=selected_message_guid)
 
+    def send_file(chat_id: str, path, *, name=None, mime_type=None):
+        if not settings.bluebubbles_url or not settings.bluebubbles_password:
+            raise RuntimeError("BlueBubbles is not configured")
+        return send_attachment(
+            settings.bluebubbles_url, settings.bluebubbles_password, chat_id, path,
+            name=name, mime_type=mime_type)
+
+    def image_fn(prompt: str) -> bytes:
+        return agent.generate_image(prompt)
+
+    def video_fn(prompt: str):
+        try:
+            return agent.generate_video(prompt)
+        except Exception:
+            return None
+
     def warm_helper():
         if not settings.bluebubbles_url or not settings.bluebubbles_password:
             return None
@@ -305,6 +352,20 @@ def build_service(settings: Settings) -> RallyService:
                 return "Today's web search limit has been reached. Try again tomorrow."
             return web.answer(request, tone=tone)
 
+    def video_link_fn(prompt: str):
+        if web_answer_fn is None:
+            return None
+        try:
+            answer = web_answer_fn(
+                "Find one currently available YouTube watch URL for this clip: "
+                f"{prompt}. Reply with the https URL only. If none exists, say none.")
+        except Exception:
+            return None
+        url = extract_video_url(answer)
+        if url and verify_video_url(url):
+            return url
+        return None
+
     adaptive_handler = None
     if settings.adaptive_enabled and settings.xai_api_key and settings.allowed_chat_ids:
         proposal_generator = None
@@ -316,10 +377,26 @@ def build_service(settings: Settings) -> RallyService:
             proposal_generator = CapabilityProposalGenerator(
                 draft_transport, CapabilityProposalStore(settings.database_path.parent /
                                                          'capability_proposals'))
+        from app.dashboard_live import generate_dashboard
+        from app.portal_store import PortalStore
+        portal_for_tools = PortalStore(settings.database_path)
+
+        def generate_dashboard_fn(chat_id: str) -> dict:
+            publisher = None
+            if settings.portal_publish_approved:
+                def publisher(target_chat):
+                    from scripts.publish_portal import publish_live
+                    return publish_live(settings, target_chat)
+            return generate_dashboard(
+                store, portal_for_tools, chat_id, app_url=settings.app_url,
+                allowed_chat_ids=settings.allowed_chat_ids, publisher=publisher)
+
         adaptive_handler = AdaptiveHandler(
             AdaptiveStore(settings.database_path), AdaptivePlanner(agent._call),
             build_default_registry(settings.allowed_chat_ids, plan_store=store,
-                                   web_answer_fn=web_answer_fn), proposal_generator)
+                                   web_answer_fn=web_answer_fn,
+                                   generate_dashboard_fn=generate_dashboard_fn),
+            proposal_generator)
 
     def react(chat_id: str, message_id: str, reaction: str):
         if not settings.bluebubbles_url or not settings.bluebubbles_password:
@@ -372,6 +449,12 @@ def build_service(settings: Settings) -> RallyService:
                         group_turns=GroupTurnStore(settings.database_path),
                         react_fn=react, typing_fn=typing, defer_heavy_work=True,
                         history_fn=history_fn, helper_warm_fn=warm_helper,
+                        image_fn=image_fn if settings.xai_api_key else None,
+                        video_fn=video_fn if settings.xai_api_key else None,
+                        video_link_fn=video_link_fn,
+                        send_attachment_fn=send_file if (
+                            settings.bluebubbles_url and settings.bluebubbles_password
+                        ) else None,
                         portal_publish_fn=publish_trigger,
                         knowledge_fn=knowledge_fn, knowledge_store=knowledge_store,
                         knowledge_refresh_fn=knowledge_refresh_fn)
@@ -401,9 +484,6 @@ class CoalescingPortalPublisher:
             try:
                 result = self.publish_fn()
                 if result == "already publishing":
-                    # The periodic publisher owns the process-level deployment lock.
-                    # Keep this change dirty and retry shortly after it releases it
-                    # rather than silently deferring the update to the next tick.
                     with self._lock:
                         self._dirty = True
                     time.sleep(1)

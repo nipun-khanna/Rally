@@ -1,18 +1,21 @@
 """Schema-checked Grok calls for conversation understanding and next actions."""
 
+import base64
 import json
 import logging
 import re
 from dataclasses import asdict
 from datetime import date, time, timedelta
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Callable, Literal
 from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.browser.agent import looks_like_browser_request
 from app.group_safety import refusal_text
+from app.media import looks_like_image_request, looks_like_video_request
 from app.models import ChatMessage, PlanFacts
 from app.reactions import completion_reaction
 from app.tone import group_tone
@@ -20,6 +23,77 @@ from app.tone import group_tone
 logger = logging.getLogger(__name__)
 CONVERSATION_DECISION_TIMEOUT = 2
 DEFAULT_GROK_TIMEOUT = 10
+_RECAP_JOB = re.compile(
+    r"\b(recap|what'?s the plan|what have we decided|what did we (?:decide|land on))\b",
+    re.I,
+)
+_QUESTION_JOB = re.compile(
+    r"\bhow (?:to|do|can|would|should)\b|\bwho (?:made|makes)\b|"
+    r"\bname\b.+\bsongs?\b|\blinked\s*lists?\b",
+    re.I,
+)
+_RESERVATION_JOB = re.compile(
+    r"\b(?:make a res(?:ervation)?|book(?:\s+a\s+table)?|reserve|"
+    r"(?:can|could) you (?:make|book)|go with)\b",
+    re.I,
+)
+_SHORT_QUESTION = re.compile(
+    r"^\s*(?:what|how|why|where|when|who|which|can|could)\b",
+    re.I,
+)
+_HELP_JOB = re.compile(
+    r"\b(?:what can you (?:do|help with)|what do you do|"
+    r"what are you (?:able to do|good for)|"
+    r"(?:your )?(?:capabilities|commands))\b|"
+    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay|ask)[,\s]+)?@?rally\b[\s,:!\-]*"
+    r"(?:help(?:\s+me)?(?:\s+out)?)\s*[?.!]*\s*$",
+    re.I,
+)
+_DASHBOARD_JOB = re.compile(
+    r"\b(?:admin\s+dashboard|(?:send(?:\s+me)?|open|share)\s+(?:the\s+)?"
+    r"(?:admin\s+)?dashboard|(?:the\s+)?dashboard(?:\s+link)?)\b",
+    re.I,
+)
+_RESTAURANT_JOB = re.compile(
+    r"\b(where should we eat|where to eat|restaurants?|recommend\w*\s+(?:a\s+)?"
+    r"(?:place|spot|restaurant)|food rec|pick a (?:spot|place|restaurant))\b",
+    re.I,
+)
+
+
+def _conversation_job(request: str) -> str:
+    """Latest-message intent wins. Never a standing plan-only brief."""
+    text = request or ""
+    if looks_like_image_request(text):
+        return ("the backend will generate and attach an image; do not recap "
+                "or refuse an ordinary draw/pic ask")
+    if looks_like_video_request(text):
+        return ("the backend will generate or send a verified video/link; "
+                "do not recap or invent a dead url")
+    if _HELP_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("briefly list Rally's real capabilities; do not recap the plan")
+    if _DASHBOARD_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("share the hosted dashboard link; never an "
+                "admin token; do not recap")
+    if looks_like_browser_request(text) and not _RECAP_JOB.search(text):
+        return ("this is a browser task; do not recap; the backend opens sites, "
+                "searches, and fills public forms, then waits at sign-in")
+    if _RESERVATION_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("acknowledge any venue they picked; you cannot book over text "
+                "alone — mention the browser; do not recap")
+    if _RESTAURANT_JOB.search(text) and not _RECAP_JOB.search(text):
+        return ("pick a specific restaurant with a one-line why; not a booking; "
+                "do not recap")
+    if _QUESTION_JOB.search(text):
+        return ("answer the latest question only; do not recap the plan or "
+                "list other messages as plan facts")
+    if _RECAP_JOB.search(text):
+        return "help the group decide what, where, when, who, and the next concrete step"
+    if "?" in text or _SHORT_QUESTION.match(text):
+        return ("answer the latest question only; do not recap the plan or "
+                "list other messages as plan facts")
+    return ("answer the latest request; you are not plan-only; recap the plan "
+            "only if they asked for a recap or the plan")
 
 
 class Extracted(BaseModel):
@@ -153,7 +227,12 @@ class GrokClient:
     def __init__(self, api_key: str, model: str = "grok-4.7", transport: Callable | None = None,
                  default_city: str = "", time_zone: str = "America/New_York",
                  extraction_timeout: float = 60, extraction_reasoning_effort: str = "low",
-                 direct_reasoning_effort: str | None = None, direct_timeout: float = 25):
+                 direct_reasoning_effort: str | None = None, direct_timeout: float = 25,
+                 image_model: str = "grok-imagine-image-2.0",
+                 image_transport: Callable | None = None,
+                 video_model: str = "grok-imagine-video-1.5",
+                 video_transport: Callable | None = None,
+                 image_timeout: float = 60, video_timeout: float = 45):
         if not 1 <= extraction_timeout <= 120:
             raise ValueError("Extraction timeout must be between 1 and 120 seconds")
         if extraction_reasoning_effort not in ("low", "medium", "high"):
@@ -165,6 +244,8 @@ class GrokClient:
             raise ValueError("Invalid direct reply reasoning effort for model")
         if not 1 <= direct_timeout <= 120:
             raise ValueError("Direct reply timeout must be between 1 and 120 seconds")
+        if not 1 <= image_timeout <= 120 or not 1 <= video_timeout <= 120:
+            raise ValueError("Image and video timeouts must be between 1 and 120 seconds")
         self.api_key = api_key
         self.model = model
         self.transport = transport
@@ -174,6 +255,12 @@ class GrokClient:
         self.extraction_reasoning_effort = extraction_reasoning_effort
         self.direct_reasoning_effort = direct_reasoning_effort
         self.direct_timeout = direct_timeout
+        self.image_model = image_model
+        self.image_transport = image_transport
+        self.video_model = video_model
+        self.video_transport = video_transport
+        self.image_timeout = image_timeout
+        self.video_timeout = video_timeout
 
     def _call(self, schema: type[BaseModel], prompt: str, data: dict) -> dict:
         payload = {
@@ -400,8 +487,9 @@ class GrokClient:
         )
         prompt = (
             "You are Rally — a casual, slightly funny, chill friend in this iMessage group, not a "
-            "corporate safety bot and not a concierge. Return one JSON decision that helps the "
-            "group decide what to do, where, when, who, and the next concrete step. "
+            "corporate safety bot and not a concierge. Return one JSON decision. The latest "
+            "human request is the job — that intent wins over older plan talk. You are not "
+            "plan-only. "
             f"The group tone is {tone}. Unless the tone is formal, be casual, direct, a little "
             "playful, and take a side when it helps. Swearing and slang the group itself uses are "
             "fine in moderation, but don't force them or make up slang. Be warm, not mean: never "
@@ -410,10 +498,25 @@ class GrokClient:
             "write formally. "
             "Do not imitate a specific person. "
             f"{relevance} "
+            "Rally's real tools, fail-closed on allowlisted chats after a Rally ping or "
+            "during a 5-minute turn: recap / plan / conflicts / forget exact facts / Q&A "
+            "on this thread including pre-join history; pick a restaurant when asked "
+            "(cannot book over text alone — the backend can browse a reservation); "
+            "hosted dashboard link, never an "
+            "admin token; local or Browser Use browser to search, open sites, fill public "
+            "forms, and walk a reservation until sign-in then wait for a human; Grok "
+            "images drawn and sent as iMessage attachments; generate or send a verified "
+            "video or https link; stall revival and a nicer voice. Do not refuse or recap "
+            "instead of using those tools. "
             "Human messages are the primary evidence. The plan object can be empty or stale; "
             "believe the chat. If someone already stated a time, place, party size, cuisine, "
             "or constraint in chat or memory, treat it as known. Only call a detail unknown when "
             "no human message, memory fact, or plan field states it. "
+            "Answer the latest human request. If it is a question, answer that question. "
+            "Only recap when they asked for a recap or the plan. Never list unrelated "
+            "questions as plan facts. "
+            "When they ask for a recap or the plan, help the group decide what, where, when, "
+            "who, and the next concrete step. "
             "A recap must name those concrete known details from recent human messages and "
             "the one decision still open. "
             "When people are choosing among options they already named, recommend one option "
@@ -451,7 +554,7 @@ class GrokClient:
             {
                 "request": request,
                 "followup": followup,
-                "job": "help the group decide what, where, when, who, and the next concrete step",
+                "job": _conversation_job(request),
                 "plan": asdict(facts) if facts else None,
                 "proposal": proposal,
                 "memory": memory_context,
@@ -474,3 +577,126 @@ class GrokClient:
         if not followup and decision.safety != "refuse" and not decision.message:
             raise ValueError("Grok returned an empty direct reply")
         return decision
+
+    def generate_image(self, prompt: str) -> bytes:
+        """Create one image via xAI images/generations. Never log the key or prompt."""
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise GrokProviderError("request", "image")
+        payload = {
+            "model": self.image_model,
+            "prompt": prompt.strip()[:2000],
+            "n": 1,
+            "response_format": "b64_json",
+        }
+        started = perf_counter()
+        try:
+            if self.image_transport:
+                raw = self.image_transport(payload)
+            else:
+                if not self.api_key:
+                    raise GrokProviderError("configuration", "image")
+                response = httpx.post(
+                    "https://api.x.ai/v1/images/generations", json=payload,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=self.image_timeout)
+                response.raise_for_status()
+                raw = response.json()
+            return _image_bytes(raw)
+        except GrokProviderError:
+            raise
+        except httpx.TimeoutException:
+            raise GrokProviderError("timeout", "image") from None
+        except httpx.HTTPStatusError as exc:
+            raise GrokProviderError("http", "image", exc.response.status_code) from None
+        except httpx.HTTPError:
+            raise GrokProviderError("transport", "image") from None
+        except (KeyError, IndexError, ValueError, TypeError):
+            raise GrokProviderError("response", "image") from None
+        finally:
+            logger.warning("grok stage=image elapsed_ms=%s",
+                           int((perf_counter() - started) * 1000))
+
+    def generate_video(self, prompt: str) -> bytes:
+        """Create one short clip via xAI videos/generations. Bounded poll."""
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise GrokProviderError("request", "video")
+        payload = {
+            "model": self.video_model,
+            "prompt": prompt.strip()[:2000],
+            "duration": 5,
+            "resolution": "480p",
+        }
+        started = perf_counter()
+        try:
+            if self.video_transport:
+                raw = self.video_transport(payload)
+                if isinstance(raw, (bytes, bytearray)):
+                    return bytes(raw)
+                raise GrokProviderError("response", "video")
+            if not self.api_key:
+                raise GrokProviderError("configuration", "video")
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            created = httpx.post(
+                "https://api.x.ai/v1/videos/generations", json=payload,
+                headers=headers, timeout=min(20, self.video_timeout))
+            created.raise_for_status()
+            request_id = created.json().get("request_id")
+            if not isinstance(request_id, str) or not request_id.strip():
+                raise GrokProviderError("response", "video")
+            deadline = perf_counter() + self.video_timeout
+            video_url = None
+            while perf_counter() < deadline:
+                status = httpx.get(
+                    f"https://api.x.ai/v1/videos/{request_id}",
+                    headers=headers, timeout=10)
+                status.raise_for_status()
+                body = status.json()
+                state = body.get("status")
+                if state == "done":
+                    video = body.get("video") if isinstance(body.get("video"), dict) else {}
+                    video_url = video.get("url")
+                    break
+                if state in {"failed", "expired"}:
+                    raise GrokProviderError("response", "video")
+                sleep(2)
+            if not isinstance(video_url, str) or not video_url.startswith("https://"):
+                raise GrokProviderError("timeout", "video")
+            download = httpx.get(video_url, timeout=30, follow_redirects=True)
+            download.raise_for_status()
+            data = download.content
+            if not data or len(data) > 40 * 1024 * 1024:
+                raise GrokProviderError("response", "video")
+            return data
+        except GrokProviderError:
+            raise
+        except httpx.TimeoutException:
+            raise GrokProviderError("timeout", "video") from None
+        except httpx.HTTPStatusError as exc:
+            raise GrokProviderError("http", "video", exc.response.status_code) from None
+        except httpx.HTTPError:
+            raise GrokProviderError("transport", "video") from None
+        except (KeyError, IndexError, ValueError, TypeError):
+            raise GrokProviderError("response", "video") from None
+        finally:
+            logger.warning("grok stage=video elapsed_ms=%s",
+                           int((perf_counter() - started) * 1000))
+
+
+def _image_bytes(raw) -> bytes:
+    if isinstance(raw, (bytes, bytearray)):
+        data = bytes(raw)
+        if not data:
+            raise GrokProviderError("response", "image")
+        return data
+    if not isinstance(raw, dict):
+        raise GrokProviderError("response", "image")
+    items = raw.get("data")
+    if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+        raise GrokProviderError("response", "image")
+    encoded = items[0].get("b64_json")
+    if not isinstance(encoded, str) or not encoded:
+        raise GrokProviderError("response", "image")
+    data = base64.b64decode(encoded, validate=False)
+    if not data:
+        raise GrokProviderError("response", "image")
+    return data

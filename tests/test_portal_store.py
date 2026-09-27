@@ -1,6 +1,18 @@
 from app.portal_store import PortalStore
 
 
+def test_hosted_group_public_id_prefers_c3jg_prefix(tmp_path):
+    store = PortalStore(tmp_path / "db.sqlite")
+    store.ensure_group("any;-;+15555550100")
+    group = store.ensure_group("any;+;chat-one")
+    with store._db() as db:
+        db.execute("UPDATE portal_groups SET public_id=? WHERE chat_id=?",
+                   ("C3JgTestHostedArchive000000000001", "any;+;chat-one"))
+    assert store.hosted_group_public_id() == "C3JgTestHostedArchive000000000001"
+    assert store.hosted_group_public_id("Nope") is None
+    assert group != "C3JgTestHostedArchive000000000001"
+
+
 def test_public_id_is_opaque_and_rotatable(tmp_path):
     store = PortalStore(tmp_path / "db.sqlite")
     first = store.ensure_group("iMessage;+;real-chat-guid")

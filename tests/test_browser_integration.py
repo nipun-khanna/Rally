@@ -39,8 +39,9 @@ class ScriptedRuntime:
     def status(self):
         return {"running": self.running, "installed": True, "profile": "configured"}
 
-    def start(self):
+    def start(self, headed=False):
         self.running = True
+        self.headed = headed
         return self.status()
 
     def stop(self):
@@ -86,6 +87,7 @@ def build(tmp_path, runtime=None, transport=None):
         "browser_enabled": True,
         "browser_owner_chat_id": OWNER,
         "browser_owner_sender_id": SENDER,
+        "allowed_chat_ids": frozenset({GROUP}),
         "browser_max_actions": 4,
         "browser_max_text_chars": 6000,
     })()
@@ -93,7 +95,8 @@ def build(tmp_path, runtime=None, transport=None):
         runtime, BrowserStore(tmp_path / "browser.sqlite3"),
         transport or (lambda *a: {"action": "complete", "answer": "Weekend weather looks clear."}),
         settings)
-    inbound = BrowserInbound(OWNER, SENDER, task, lambda chat, text: sent.append((chat, text)))
+    inbound = BrowserInbound(OWNER, SENDER, task, lambda chat, text: sent.append((chat, text)),
+                             allowed_chat_ids={GROUP})
     app = create_app(service, webhook_token="secret", schedule=False,
                      browser_runtime=runtime, browser_inbound=inbound,
                      browser_admin_token=ADMIN, browser_enabled=True)
@@ -103,27 +106,106 @@ def build(tmp_path, runtime=None, transport=None):
 def test_owner_private_browse_does_not_enter_group_memory(tmp_path):
     client, group, sent, runtime, task = build(tmp_path)
     response = client.post("/webhooks/bluebubbles?token=secret",
-                           json=payload(OWNER, "Open https://news.example.com/article and summarize it"))
+                           json=payload(OWNER, "Hey Rally, open https://news.example.com/article and summarize it"))
     assert response.json()["accepted"] is True
     assert group.store.recent_messages(OWNER) == []
     assert group.store.recent_messages(GROUP) == []
     assert sent[0][0] == OWNER
+    assert sent[0][1].startswith("Rally:")
     assert "weather" in sent[0][1].lower()
     assert all(chat == OWNER and flag is True for chat, flag in runtime.authenticated)
     client.close()
 
 
-def test_group_message_cannot_use_browser_or_owner_profile(tmp_path):
+def test_phone_handle_on_local_account_owner_can_open(tmp_path):
+    chat = "any;-;+15555550100"
+    runtime = ScriptedRuntime()
+    sent = []
+    store = Store(tmp_path / "r.sqlite3")
+    service = RallyService(store, QuietAgent(), lambda facts: [],
+                           lambda dest, text: sent.append((dest, text)),
+                           allowed_chat_ids={GROUP})
+    settings = type("S", (), {
+        "browser_enabled": True,
+        "browser_owner_chat_id": chat,
+        "browser_owner_sender_id": "local-imessage-account",
+        "allowed_chat_ids": frozenset({GROUP}),
+        "browser_max_actions": 4,
+        "browser_max_text_chars": 6000,
+    })()
+    task = BrowserTaskService(
+        runtime, BrowserStore(tmp_path / "browser.sqlite3"),
+        lambda *a: {"action": "complete", "answer": "Opened example.com"},
+        settings)
+    inbound = BrowserInbound(chat, "local-imessage-account", task,
+                             lambda dest, text: sent.append((dest, text)),
+                             allowed_chat_ids={GROUP})
+    app = create_app(service, webhook_token="secret", schedule=False,
+                     browser_runtime=runtime, browser_inbound=inbound,
+                     browser_admin_token=ADMIN, browser_enabled=True)
+    client = TestClient(app)
+    phone = client.post("/webhooks/bluebubbles?token=secret", json=payload(
+        chat, "Ask Rally to open https://example.com", "phone-1",
+        sender="+15555550100"))
+    mac = client.post("/webhooks/bluebubbles?token=secret", json=payload(
+        chat, "Hey Rally, open https://example.com now", "mac-1",
+        sender="local-imessage-account", mine=True))
+    denied = client.post("/webhooks/bluebubbles?token=secret", json=payload(
+        "iMessage;+;other-group", "Ask Rally to open https://example.com", "bad-1",
+        sender="intruder"))
+    assert phone.json()["accepted"] is True
+    assert mac.json()["accepted"] is True
+    assert denied.json()["accepted"] is False
+    assert all(text.startswith("Rally:") for _dest, text in sent)
+    assert sum("example.com" in text.lower() for _dest, text in sent) == 2
+    assert runtime.authenticated == [(chat, True), (chat, True)]
+    client.close()
+
+
+def test_allowlisted_group_search_uses_browser(tmp_path):
     runtime = ScriptedRuntime()
     client, group, sent, runtime, task = build(tmp_path, runtime=runtime)
     response = client.post("/webhooks/bluebubbles?token=secret",
-                           json=payload(GROUP, "Hey Rally, open https://news.example.com/account",
+                           json=payload(GROUP, "Hey Rally, search for italian in midtown",
                                         sender="member"))
     assert response.json()["accepted"] is True
+    assert sent[0][0] == GROUP
+    assert sent[0][1].startswith("Rally:")
+    assert "weather" in sent[0][1].lower()
+    client.close()
+
+
+def test_unallowlisted_group_cannot_use_browser(tmp_path):
+    runtime = ScriptedRuntime()
+    client, group, sent, runtime, task = build(tmp_path, runtime=runtime)
+    other = "iMessage;+;other-group"
+    response = client.post("/webhooks/bluebubbles?token=secret",
+                           json=payload(other, "Hey Rally, search for italian in midtown",
+                                        sender="member"))
+    assert response.json()["accepted"] is False
     assert runtime.actions == []
+    assert all(chat != other for chat, _text in sent)
+    client.close()
+
+
+def test_reservation_intent_waits_for_mac_confirm(tmp_path):
+    runtime = ScriptedRuntime()
+    runtime.page = BrowserObservation(
+        "https://www.opentable.com/login", "Sign in", "Enter your password", ())
+
+    def transport(schema, prompt, data):
+        return {"action": "fill", "role": "textbox", "name": "Password", "text": "stolen"}
+
+    client, group, sent, runtime, task = build(tmp_path, runtime=runtime, transport=transport)
+    response = client.post("/webhooks/bluebubbles?token=secret",
+                           json=payload(GROUP, "Hey Rally, reserve a table at Carbone Friday 8",
+                                        sender="member"))
+    assert response.json()["accepted"] is True
+    assert sent[0][1].startswith("Rally:")
+    assert "you're all set" not in sent[0][1].lower()
+    assert "i booked" not in sent[0][1].lower()
+    assert "mac" in sent[0][1].lower() or "sign in" in sent[0][1].lower()
     assert runtime.actions == []
-    assert all(chat != OWNER for chat, _text in sent)
-    assert not any("Signed-in" in text for _chat, text in sent)
     client.close()
 
 
@@ -140,7 +222,7 @@ def test_prompt_injection_page_is_summarized_as_text(tmp_path):
 
     client, group, sent, runtime, task = build(tmp_path, runtime=runtime, transport=transport)
     client.post("/webhooks/bluebubbles?token=secret",
-                json=payload(OWNER, "Summarize https://news.example.com/inject"))
+                json=payload(OWNER, "Hey Rally, summarize https://news.example.com/inject"))
     assert "injection" in sent[0][1].lower()
     client.close()
 
@@ -156,13 +238,13 @@ def test_exact_owner_approval_submits_once(tmp_path):
 
     client, group, sent, runtime, task = build(tmp_path, runtime=runtime, transport=transport)
     client.post("/webhooks/bluebubbles?token=secret",
-                json=payload(OWNER, "Click purchase on the checkout page", "m1"))
+                json=payload(OWNER, "Hey Rally, click purchase on the checkout page", "m1"))
     match = re.search(r"approve ([A-Za-z0-9]{6,8})", sent[0][1], re.I)
     assert match
     code = match.group(1)
     client.post("/webhooks/bluebubbles?token=secret",
                 json=payload(OWNER, f"approve {code}", "m2"))
-    assert any("ABC-1" in text for _, text in sent)
+    assert any("abc-1" in text.lower() for _, text in sent)
     assert runtime.actions == [{"action": "click_link", "role": "button", "name": "Purchase now"}]
     client.post("/webhooks/bluebubbles?token=secret",
                 json=payload(OWNER, f"approve {code}", "m3"))
@@ -179,7 +261,7 @@ def test_wrong_owner_approval_is_rejected(tmp_path):
         tmp_path, runtime=runtime,
         transport=lambda *a: {"action": "click_link", "role": "button", "name": "Purchase now"})
     client.post("/webhooks/bluebubbles?token=secret",
-                json=payload(OWNER, "Click purchase", "m1"))
+                json=payload(OWNER, "Hey Rally, click purchase", "m1"))
     match = re.search(r"approve ([A-Za-z0-9]{6,8})", sent[0][1], re.I)
     assert match
     client.post("/webhooks/bluebubbles?token=secret",

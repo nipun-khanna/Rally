@@ -48,6 +48,22 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(second.json(), {"accepted": False})
         self.assertEqual(len(self.store.recent_messages(CHAT)), 1)
 
+    def test_allowlisted_private_dm_webhook_is_accepted(self):
+        dm = "any;-;+15555550100"
+        self.sent.clear()
+        service = RallyService(self.store, QuietAgent(), lambda facts: [],
+                               lambda chat, text: self.sent.append((chat, text)),
+                               allowed_chat_ids={dm})
+        client = TestClient(create_app(service, webhook_token="secret", schedule=False))
+        payload = {"type": "new-message", "data": {
+            "guid": "dm-eat", "text": "Hey Rally, where should we eat?", "isFromMe": True,
+            "handle": {"address": "local-imessage-account"}, "chats": [{"guid": dm}],
+            "dateCreated": int(NOW.timestamp() * 1000)}}
+        result = client.post("/webhooks/bluebubbles?token=secret", json=payload)
+        client.close()
+        self.assertEqual(result.json(), {"accepted": True})
+        self.assertTrue(self.sent)
+
     def test_addressed_group_webhook_sends_one_same_thread_reply(self):
         payload = {"type": "new-message", "data": {
             "guid": "direct-http", "text": "Hey Rally, where should we eat?", "isFromMe": False,

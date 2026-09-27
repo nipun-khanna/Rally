@@ -120,6 +120,41 @@ def test_browser_accepts_limits_and_paths_within_ignored_directory():
     assert settings.browser_download_path == Path("data/browser/custom-downloads")
     assert settings.browser_max_actions == 12
     assert settings.browser_max_text_chars == 12000
+    assert settings.browserbase_api_key == ""
+    assert settings.browserbase_project_id == ""
+    assert settings.browser_use_api_key == ""
+
+
+def test_browserbase_keys_are_optional_and_accept_vendor_aliases():
+    settings = Settings.from_env({
+        "RALLY_BROWSER_ENABLED": "1",
+        "RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;-;owner",
+        "RALLY_BROWSER_OWNER_SENDER_ID": "+15555550123",
+        "BROWSERBASE_API_KEY": "bb-key-from-vendor",
+        "BROWSERBASE_PROJECT_ID": "proj-from-vendor",
+    })
+    assert settings.browserbase_api_key == "bb-key-from-vendor"
+    assert settings.browserbase_project_id == "proj-from-vendor"
+
+
+def test_browser_use_key_is_optional_and_accepts_vendor_alias():
+    settings = Settings.from_env({
+        "RALLY_BROWSER_ENABLED": "1",
+        "RALLY_BROWSER_OWNER_CHAT_ID": "iMessage;-;owner",
+        "RALLY_BROWSER_OWNER_SENDER_ID": "+15555550123",
+        "BROWSER_USE_API_KEY": "bu-key-from-vendor",
+    })
+    assert settings.browser_use_api_key == "bu-key-from-vendor"
+
+
+def test_browser_accepts_comma_separated_owner_senders():
+    settings = Settings.from_env({
+        "RALLY_BROWSER_ENABLED": "1",
+        "RALLY_BROWSER_OWNER_CHAT_ID": "any;-;+15555550100",
+        "RALLY_BROWSER_OWNER_SENDER_ID": "local-imessage-account,+15555550100",
+        "RALLY_BROWSER_ADMIN_TOKEN": "W6SWqB8dA_5f5SUS2ms-CNu0WhxFLBL34ff2A7vfVBQ",
+    })
+    assert settings.browser_owner_sender_id == "local-imessage-account,+15555550100"
 
 
 def test_browser_accepts_any_prefixed_private_owner_chat():
@@ -157,6 +192,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(settings.grok_extraction_effort, "low")
             self.assertEqual((settings.grok_reply_model, settings.grok_reply_effort),
                              ("grok-4.3", "none"))
+            self.assertEqual(settings.grok_image_model, "grok-imagine-image-2.0")
+            self.assertEqual(settings.grok_video_model, "grok-imagine-video-1.5")
             self.assertEqual(Settings.from_env({"RALLY_GROK_EXTRACTION_EFFORT":"MEDIUM"}).grok_extraction_effort,
                              "medium")
             with self.assertRaises(ValueError):

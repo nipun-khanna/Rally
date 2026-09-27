@@ -12,6 +12,8 @@ from app.group_turns import REPLY_WINDOW
 _SECRET_KEYS = frozenset({
     "webhook_token", "admin_token", "bluebubbles_password", "xai_api_key",
     "google_client_secret", "google_refresh_token", "browser_admin_token",
+    "browserbase_api_key",
+    "browser_use_api_key",
     "meta_model_api_key", "geoapify_api_key",
 })
 

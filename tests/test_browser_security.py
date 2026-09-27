@@ -33,6 +33,7 @@ def settings():
         "browser_enabled": True,
         "browser_owner_chat_id": OWNER,
         "browser_owner_sender_id": SENDER,
+        "allowed_chat_ids": frozenset(),
         "browser_max_actions": 3,
         "browser_max_text_chars": 6000,
     })()
@@ -77,6 +78,9 @@ def test_crash_and_blocked_download_return_specific_status(tmp_path):
 def test_relationship_and_group_text_never_look_like_silent_browser_work():
     assert looks_like_browser_request("Open https://news.example.com/article")
     assert looks_like_browser_request("Hey Rally, check the airline site")
+    assert looks_like_browser_request("Hey Rally, search for italian in midtown")
+    assert looks_like_browser_request("Hey Rally, reserve a table at Carbone")
     assert not looks_like_browser_request("Hey Rally, remind me to call mom")
     assert not looks_like_browser_request("dinner Friday in Midtown")
     assert not looks_like_browser_request("forget that I live in Atlanta")
+    assert not looks_like_browser_request("how do I implement binary search")

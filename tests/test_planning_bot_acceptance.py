@@ -296,29 +296,77 @@ def test_second_invoke_still_hydrates_thread_history(tmp_path):
     assert "won't fake a damn restaurant" not in body
 
 
-def test_unfinished_plan_stall_sends_one_unsolicited_revival(tmp_path):
-    service, _, sent, _ = make_service(tmp_path)
-    service.store.save_plan(CHAT_A, PlanFacts(
+def _unfinished_dinner(service, *, chat=CHAT_A, when=None):
+    service.store.save_plan(chat, PlanFacts(
         activity="eat out", date="2026-09-26", location="Midtown",
-        preferred_cuisines=["indian"]), NOW - timedelta(minutes=20))
-    before = len(sent)
-    service.receive(message("stall", "we still need to pick a spot", seconds=0))
+        preferred_cuisines=["indian"]), when or (NOW - timedelta(minutes=20)))
+
+
+def _assert_one_revival(sent, before):
     assert len(sent) == before + 1
     body = sent[-1][1].lower()
     assert "coward" not in body
     assert "won't fake a damn restaurant" not in body
     assert any(token in body for token in ("table", "indian", "midtown", "spot"))
+    return body
+
+
+def test_unfinished_plan_stall_sends_one_unsolicited_revival(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    _unfinished_dinner(service)
+    before = len(sent)
+    service.receive(message("stall", "we still need to pick a spot", seconds=0))
+    _assert_one_revival(sent, before)
     service.receive(message("again", "pick a place already", seconds=20))
     assert len(sent) == before + 1
 
 
 def test_idle_chatter_without_a_stall_does_not_nudge(tmp_path):
     service, _, sent, _ = make_service(tmp_path)
-    service.store.save_plan(CHAT_A, PlanFacts(
-        activity="eat out", date="2026-09-26", location="Midtown",
-        preferred_cuisines=["indian"]), NOW - timedelta(minutes=20))
+    _unfinished_dinner(service)
     service.receive(message("idle", "lol", seconds=0))
     assert sent == []
+
+
+def test_stall_nudge_after_five_minute_window_sends_one_revival(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    _unfinished_dinner(service)
+    service.receive(message("invoke", "Rally, recap the plan", seconds=0))
+    assert sent, "invoke should recap before the window closes"
+    before = len(sent)
+    service.receive(message("stall", "we still need to pick a spot", seconds=6 * 60))
+    _assert_one_revival(sent, before)
+    service.receive(message("again", "still deciding", seconds=6 * 60 + 20))
+    assert len(sent) == before + 1
+
+
+def test_finished_or_locked_plan_does_not_revive(tmp_path):
+    for state in ("DONE", "READY", "EXECUTING"):
+        service, _, sent, _ = make_service(tmp_path / state)
+        plan = service.store.save_plan(CHAT_A, PlanFacts(
+            activity="eat out", date="2026-09-26", location="Taj",
+            preferred_cuisines=["indian"]), NOW - timedelta(minutes=20))
+        service.store.set_state(plan.id, state)
+        service.receive(message("stall", "we still need to pick a spot", seconds=0))
+        assert sent == [], f"{state} plan must stay silent"
+
+
+def test_off_allowlist_unfinished_plan_does_not_revive(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    outside = "iMessage;+;outside"
+    _unfinished_dinner(service, chat=outside)
+    assert not service.receive(message("stall", "we still need to pick a spot", chat=outside))
+    assert service.tick(NOW) == 0
+    assert sent == []
+
+
+def test_tick_revives_unfinished_plan_after_long_gap(tmp_path):
+    service, _, sent, _ = make_service(tmp_path)
+    _unfinished_dinner(service, when=NOW - timedelta(minutes=20))
+    assert service.tick(NOW) == 1
+    _assert_one_revival(sent, 0)
+    assert service.tick(NOW + timedelta(minutes=1)) == 0
+    assert len(sent) == 1
 
 
 def test_active_turn_answers_followup_without_saying_rally(tmp_path):
@@ -330,3 +378,101 @@ def test_active_turn_answers_followup_without_saying_rally(tmp_path):
     assert "blinding lights" in sent[-1][1].lower()
     service.receive(message("late", "name me 5 weekend songs", seconds=6 * 60))
     assert len(sent) == before + 1
+
+
+LIVE_PLAN_SOUP = (
+    "so far: dinner, 2026-09-27, at 8pm, near taj, atlanta, indian, wsp rally; "
+    "we live in atlanta boy; go with taj can you make a res; how to reverse a "
+    "linkedlist. pick a spot and we're set — and to be clear, i can't actually "
+    "book anything yet."
+)
+
+
+def _dinner_near_taj(service):
+    service.store.add_message(message(
+        "planted", "dinner 2026-09-27 at 8pm near taj, atlanta, indian"))
+    service.store.add_message(message("wsp", "wsp rally", seconds=5))
+    service.store.add_message(message("home", "we live in atlanta boy", seconds=10))
+    service.store.save_plan(CHAT_A, PlanFacts(
+        activity="dinner", date="2026-09-27", time="20:00",
+        location="taj, atlanta", preferred_cuisines=["indian"]), NOW)
+
+
+def _assert_not_plan_soup(body: str):
+    lowered = body.lower()
+    assert "so far:" not in lowered
+    assert "here's the plan" not in lowered
+    assert "wsp rally" not in lowered
+    assert "we live in atlanta boy" not in lowered
+    assert "how to reverse a linkedlist" not in lowered
+
+
+def test_linkedlist_question_answers_instead_of_plan_soup(tmp_path):
+    service, agent, sent, _ = make_service(tmp_path)
+    agent.reply = LIVE_PLAN_SOUP
+    _dinner_near_taj(service)
+    service.receive(message("ask", "Rally, how to reverse a linkedlist", seconds=30))
+    assert sent, "linked-list question must get a reply"
+    assert agent.contexts == [], "do not send a knowledge question through the plan model"
+    body = sent[-1][1].lower()
+    _assert_not_plan_soup(body)
+    assert "reverse" in body
+    assert any(token in body for token in ("pointer", "iterative", "prev", "current.next"))
+
+
+def test_linkedlist_followup_after_dinner_talk_is_not_a_recap(tmp_path):
+    service, agent, sent, _ = make_service(tmp_path)
+    agent.reply = LIVE_PLAN_SOUP
+    _dinner_near_taj(service)
+    service.receive(message("invoke", "Rally, what's the plan?", seconds=20))
+    recap = sent[-1][1].lower()
+    assert "dinner" in recap
+    service.receive(message("algo", "how to reverse a linkedlist", seconds=40))
+    body = sent[-1][1].lower()
+    assert body != recap
+    _assert_not_plan_soup(body)
+    assert "reverse" in body
+    assert any(token in body for token in ("pointer", "iterative", "prev", "current.next"))
+    assert "linkedlist" not in recap or "how to reverse" not in recap
+
+
+def test_taj_reservation_ping_locks_spot_and_cannot_book(tmp_path):
+    service, agent, sent, _ = make_service(tmp_path)
+    agent.reply = LIVE_PLAN_SOUP
+    _dinner_near_taj(service)
+    service.receive(message(
+        "book", "Rally, go with taj can you make a res", seconds=30))
+    assert sent, "reservation ask must get a reply"
+    assert agent.contexts == [], "do not send a reservation ask through the plan model"
+    body = sent[-1][1].lower()
+    _assert_not_plan_soup(body)
+    assert "taj" in body
+    assert any(token in body for token in ("can't book", "cannot book", "can't actually book"))
+    assert "opentable" not in body
+
+
+def test_taj_reservation_followup_is_not_a_linkedlist_dump(tmp_path):
+    service, agent, sent, _ = make_service(tmp_path)
+    agent.reply = LIVE_PLAN_SOUP
+    _dinner_near_taj(service)
+    service.receive(message("invoke", "Rally, recap the plan", seconds=20))
+    service.receive(message("book", "can you make a res", seconds=40))
+    body = sent[-1][1].lower()
+    _assert_not_plan_soup(body)
+    assert "taj" in body
+    assert any(token in body for token in ("can't book", "cannot book", "can't actually book"))
+    assert "linkedlist" not in body
+    assert "opentable" not in body
+
+
+def test_recap_after_unrelated_questions_omits_them_as_plan_facts(tmp_path):
+    service, agent, sent, _ = make_service(tmp_path)
+    agent.reply = LIVE_PLAN_SOUP
+    _dinner_near_taj(service)
+    service.store.add_message(message(
+        "algo", "how to reverse a linkedlist", seconds=15))
+    service.receive(message("recap", "Rally, what have we decided?", seconds=30))
+    body = sent[-1][1].lower()
+    assert "dinner" in body
+    assert "how to reverse a linkedlist" not in body
+    assert "linkedlist" not in body

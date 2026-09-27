@@ -56,10 +56,10 @@ def eligible_for_revival(
     """One unsolicited revival for an unfinished plan, after cooldown or a stall signal."""
     if not unfinished_plan(plan) or plan.last_intervention_version == plan.version:
         return False
-    if last_rally_at is not None and now - last_rally_at < cooldown:
-        return False
     if incoming_stall:
         return True
+    if last_rally_at is not None and now - last_rally_at < cooldown:
+        return False
     return now - plan.last_human_at >= cooldown
 
 

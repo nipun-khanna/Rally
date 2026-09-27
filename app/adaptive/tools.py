@@ -91,7 +91,8 @@ class ToolRegistry:
         return spec.handler(chat_id, dict(args))
 
 
-def build_default_registry(allowed_chat_ids, *, plan_store, web_answer_fn=None) -> ToolRegistry:
+def build_default_registry(allowed_chat_ids, *, plan_store, web_answer_fn=None,
+                           generate_dashboard_fn=None) -> ToolRegistry:
     registry = ToolRegistry(allowed_chat_ids)
 
     def plan_status(chat_id: str, args: dict) -> dict:
@@ -106,4 +107,12 @@ def build_default_registry(allowed_chat_ids, *, plan_store, web_answer_fn=None) 
     if web_answer_fn is not None:
         registry.register(ToolSpec('web_research', {'request': str, 'tone': str}, 'read',
                                    lambda chat_id, args: web_answer_fn(args['request'], tone=args['tone'])))
+    if generate_dashboard_fn is not None:
+        def publish_dashboard(chat_id: str, args: dict) -> dict:
+            result = generate_dashboard_fn(chat_id)
+            if not isinstance(result, dict) or 'public_id' not in result or 'url' not in result:
+                raise ValueError('Dashboard generate did not return a public url')
+            return {'public_id': result['public_id'], 'url': result['url']}
+        registry.register(ToolSpec('generate_dashboard', {}, 'read', publish_dashboard))
+        registry.register(ToolSpec('publish_archive', {}, 'read', publish_dashboard))
     return registry

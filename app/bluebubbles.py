@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 import json
 import re
 from typing import Any, Callable
@@ -134,6 +135,88 @@ def send_message(
         payload["partIndex"] = 0
     body = json.dumps(payload).encode("utf-8")
     request = Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+
+    try:
+        with opener(request, timeout=45) as response:
+            result = json.load(response)
+    except (HTTPError, URLError, OSError):
+        raise DeliveryUncertainError("BlueBubbles delivery outcome is uncertain") from None
+    except (UnicodeError, json.JSONDecodeError):
+        raise DeliveryUncertainError("BlueBubbles delivery outcome is uncertain") from None
+
+    if not isinstance(result, dict):
+        raise DeliveryUncertainError("BlueBubbles delivery outcome is uncertain")
+    if result.get("status") != 200:
+        raise DeliveryUncertainError("BlueBubbles rejected the message; delivery outcome is uncertain")
+    return result
+
+
+def attachment_chat_guid(chat_id: str) -> str:
+    """BlueBubbles attachment send wants a bare DM address, not service;-;id."""
+    if is_private_direct_chat(chat_id):
+        return chat_id.partition(";-;")[2]
+    return chat_id
+
+
+def _multipart(fields: dict[str, str], filename: str, data: bytes, mime_type: str) -> tuple[bytes, str]:
+    boundary = uuid4().hex
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+            f"{value}\r\n".encode("utf-8")
+        )
+    safe_name = filename.replace('"', "")
+    chunks.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"attachment\"; "
+        f"filename=\"{safe_name}\"\r\nContent-Type: {mime_type}\r\n\r\n".encode("utf-8")
+    )
+    chunks.append(data)
+    chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def send_attachment(
+    base_url: str,
+    password: str,
+    chat_id: str,
+    file_path: str | Path,
+    opener: Callable[..., Any] = urlopen,
+    *,
+    name: str | None = None,
+    mime_type: str | None = None,
+) -> dict[str, Any]:
+    """Send a local file to a BlueBubbles chat. Never leak the password on failure."""
+    if not all(isinstance(value, str) and value for value in (password, chat_id)):
+        raise ValueError("BlueBubbles password and chat ID are required")
+    if not isinstance(base_url, str):
+        raise ValueError("Invalid BlueBubbles base URL")
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("Invalid BlueBubbles base URL")
+    path = Path(file_path)
+    try:
+        data = path.read_bytes()
+    except OSError:
+        raise ValueError("Attachment file is required") from None
+    if not data:
+        raise ValueError("Attachment file is required")
+    filename = name or path.name or "rally.bin"
+    if "/" in filename or "\\" in filename or "\x00" in filename:
+        filename = "rally.bin"
+    mime_type = mime_type or "application/octet-stream"
+    target = attachment_chat_guid(chat_id)
+    if not target:
+        raise ValueError("BlueBubbles password and chat ID are required")
+
+    api_path = parsed.path.rstrip("/") + "/api/v1/message/attachment"
+    url = urlunsplit((parsed.scheme, parsed.netloc, api_path, urlencode({"password": password}), ""))
+    body, content_type = _multipart(
+        {"chatGuid": target, "tempGuid": str(uuid4()), "name": filename},
+        filename, data, mime_type,
+    )
+    request = Request(url, data=body, headers={"Content-Type": content_type}, method="POST")
 
     try:
         with opener(request, timeout=45) as response:

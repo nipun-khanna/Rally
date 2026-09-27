@@ -63,8 +63,17 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
         if plan.facts.date and plan.facts.date < today and plan.state == "DONE":
             continue
         details = []
+        facts = plan.facts
         if plan.state == "ABANDONED":
             details.append("Canceled in the group chat.")
+        if facts.location:
+            details.append(f"Near {facts.location}.")
+        if facts.preferred_cuisines:
+            details.append("Looking for " + ", ".join(facts.preferred_cuisines) + ".")
+        if facts.time:
+            details.append(f"At {facts.time}.")
+        if facts.party_size:
+            details.append(f"Party of {facts.party_size}.")
         proposal = service.store.latest_proposal(plan.id)
         venue = None
         if proposal:

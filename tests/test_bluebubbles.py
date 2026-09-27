@@ -9,6 +9,7 @@ from app.bluebubbles import (
     IncomingMessage,
     is_private_direct_chat,
     normalize_webhook,
+    send_attachment,
     send_message,
 )
 
@@ -183,6 +184,73 @@ class BlueBubblesTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "rejected"):
             send_message("https://bb.example", "pw", "group", "hello", opener=opener)
+
+    def test_send_attachment_posts_multipart_and_strips_dm_prefix(self):
+        captured = {}
+
+        def opener(request, timeout):
+            captured["url"] = request.full_url
+            captured["method"] = request.get_method()
+            captured["content_type"] = request.get_header("Content-type")
+            captured["body"] = request.data
+            captured["timeout"] = timeout
+            return FakeResponse({"status": 200, "message": "Message sent!"})
+
+        png = b"\x89PNG\r\n\x1a\n" + b"data"
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rally.png"
+            path.write_bytes(png)
+            result = send_attachment(
+                "https://bb.example/", "p&=secret", "any;-;+15555550100",
+                path, name="rally.png", mime_type="image/png", opener=opener)
+        url = urlsplit(captured["url"])
+        self.assertEqual(url.path, "/api/v1/message/attachment")
+        self.assertEqual(parse_qs(url.query), {"password": ["p&=secret"]})
+        self.assertEqual(captured["method"], "POST")
+        self.assertIn("multipart/form-data", captured["content_type"])
+        body = captured["body"]
+        self.assertIn(b"name=\"chatGuid\"", body)
+        self.assertIn(b"+15555550100", body)
+        self.assertNotIn(b"any;-;+15555550100", body)
+        self.assertIn(b"rally.png", body)
+        self.assertIn(png, body)
+        self.assertEqual(result["status"], 200)
+        self.assertGreaterEqual(captured["timeout"], 30)
+
+    def test_send_attachment_keeps_group_guid(self):
+        captured = {}
+
+        def opener(request, timeout):
+            captured["body"] = request.data
+            return FakeResponse({"status": 200})
+
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            path.write_bytes(b"ftypmp42")
+            send_attachment(
+                "https://bb.example/", "pw", "iMessage;+;chat123",
+                path, name="clip.mp4", mime_type="video/mp4", opener=opener)
+        self.assertIn(b"iMessage;+;chat123", captured["body"])
+        self.assertIn(b"clip.mp4", captured["body"])
+
+    def test_send_attachment_hides_password_on_error(self):
+        def failing_opener(request, timeout):
+            raise URLError(f"request failed: {request.full_url}")
+
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rally.png"
+            path.write_bytes(b"png")
+            with self.assertRaises(DeliveryUncertainError) as caught:
+                send_attachment("https://bb.example", "topsecret", "group", path,
+                                opener=failing_opener)
+        self.assertNotIn("topsecret", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
 
 
 if __name__ == "__main__":

@@ -173,9 +173,9 @@ class ServiceTests(unittest.TestCase):
 
     def test_short_question_after_direct_reply_carries_one_followup_turn(self):
         first = ChatMessage("direct-followup-1", "chat1", "nick",
-                            "Rally, what can you help with?", NOW)
+                            "Rally, what's the vibe?", NOW)
         followup = ChatMessage("direct-followup-2", "chat1", "sarah",
-                               "What can you do?", NOW + timedelta(minutes=1))
+                               "What time works?", NOW + timedelta(minutes=1))
 
         self.assertTrue(self.service.receive(first))
         self.assertTrue(self.service.receive(followup))
@@ -191,10 +191,10 @@ class ServiceTests(unittest.TestCase):
                                 "Dinner is at seven", NOW + timedelta(minutes=1))
         self.service.receive(unrelated)
         later = ChatMessage("direct-boundary-3", "chat1", "sarah",
-                            "What can you do?", NOW + timedelta(minutes=2))
+                            "What time works?", NOW + timedelta(minutes=2))
         self.service.receive(later)
         stale = ChatMessage("direct-boundary-4", "chat1", "sarah",
-                            "What can you do?", NOW + timedelta(minutes=6))
+                            "What time works?", NOW + timedelta(minutes=6))
         self.service.receive(stale)
 
         self.assertEqual([call[0] for call in self.agent.direct_calls], [first.text])
@@ -222,7 +222,11 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(self.service.receive(ChatMessage(
             "direct-book", "chat1", "nick", "Rally, book it", NOW)))
         self.assertIsNone(self.store.reservation(proposal_id))
-        self.assertEqual(len(self.agent.direct_calls), 1)
+        self.assertTrue(self.sent)
+        body = self.sent[-1][1].lower()
+        self.assertTrue(any(token in body for token in (
+            "can't book", "cannot book", "can't actually book")))
+        self.assertEqual(self.agent.direct_calls, [])
 
     def test_direct_reply_survives_extraction_failure_without_duplicate(self):
         class FailingExtractor:

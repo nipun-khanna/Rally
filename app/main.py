@@ -62,6 +62,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
                voice_owner: str | None = None, browser_runtime=None,
                browser_inbound=None, browser_admin_token: str | None = None,
                browser_enabled: bool = False, owner_display_name: str = "") -> FastAPI:
+    settings = None
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -104,18 +105,31 @@ def create_app(service=None, *, webhook_token: str | None = None,
         if settings.browser_enabled:
             from app.browser.agent import BrowserTaskService
             from app.browser.handler import BrowserInbound
+            from app.browser.log import configure_browser_logging
             from app.browser.runtime import BrowserRuntime
             from app.browser.store import BrowserStore
+            configure_browser_logging()
             browser_enabled = True
             browser_admin_token = settings.browser_admin_token
+            hosted = None
+            vendor = None
+            if settings.browser_use_api_key:
+                from app.browser.hosted import BrowserUseClient
+                vendor = BrowserUseClient(settings.browser_use_api_key)
+            if settings.browserbase_api_key:
+                from app.browser.hosted import BrowserbaseClient
+                hosted = BrowserbaseClient(
+                    settings.browserbase_api_key, settings.browserbase_project_id)
             browser_runtime = BrowserRuntime(
                 settings.browser_profile_path, settings.browser_download_path,
-                None, settings.browser_max_text_chars)
+                None, settings.browser_max_text_chars, hosted=hosted, vendor=vendor)
             browser_inbound = BrowserInbound(
                 settings.browser_owner_chat_id, settings.browser_owner_sender_id,
                 BrowserTaskService(browser_runtime, BrowserStore(settings.database_path),
-                                   service.agent._call, settings),
-                service.send_fn)
+                                   service.agent._call, settings, vendor_agent=vendor),
+                service.send_fn,
+                allowed_chat_ids=settings.allowed_chat_ids,
+                group_turns=service.group_turns)
     else:
         publish_enabled = False
     tick_seconds = tick_seconds or 60
@@ -128,14 +142,38 @@ def create_app(service=None, *, webhook_token: str | None = None,
             portal_store.update_settings(chat_id, sections={"history": False, "media": False, "analytics": False})
     owner = voice_owner or 'local-imessage-account'
 
+    def resolve_public_id(chat_id):
+        from app.bluebubbles import is_private_direct_chat
+        from app.dashboard_live import generate_dashboard
+        if is_private_direct_chat(chat_id):
+            hosted = portal_store.hosted_group_public_id()
+            if hosted:
+                return hosted
+        publisher = None
+        if publish_enabled and settings is not None:
+            def publisher(target_chat):
+                from scripts.publish_portal import publish_live
+                try:
+                    return publish_live(settings, target_chat)
+                except Exception:
+                    logger.exception("Live dashboard publish failed")
+                    return "publish_failed"
+        result = generate_dashboard(
+            service.store, portal_store, chat_id, app_url=app_url,
+            allowed_chat_ids=allowed_chats, excluded_chat_ids=personal_chat_ids(),
+            publisher=publisher)
+        return result["public_id"]
+
     def command_reply(message):
         from app.group_admin_commands import admin_dashboard_reply
-        admin = admin_dashboard_reply(message, portal_store, app_url)
+        admin = admin_dashboard_reply(
+            message, portal_store, app_url, resolve_public_id=resolve_public_id)
         if admin is not None:
             return admin
         if not app_url:
             return None
-        return portal_reply(message, portal_store, app_url, history_enabled=history_enabled)
+        return portal_reply(message, portal_store, app_url, history_enabled=history_enabled,
+                            resolve_public_id=resolve_public_id)
 
     service.portal_handler = command_reply
 
@@ -201,7 +239,8 @@ def create_app(service=None, *, webhook_token: str | None = None,
         initial_import = asyncio.create_task(asyncio.to_thread(import_one_page)) if schedule else None
         proxy = None
         from app.browser.runtime import BrowserRuntime
-        if browser_enabled and isinstance(browser_runtime, BrowserRuntime):
+        if (browser_enabled and isinstance(browser_runtime, BrowserRuntime)
+                and browser_runtime.hosted is None):
             from app.browser.egress import PublicEgressProxy
             proxy = PublicEgressProxy()
             browser_runtime.proxy_url = await proxy.start()
@@ -262,7 +301,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     def browser_start(request: Request, x_rally_admin_token: str | None = Header(default=None)):
         authorize_browser_admin(request, x_rally_admin_token)
         try:
-            return browser_runtime.start()
+            return browser_runtime.start(headed=True)
         except RuntimeError as exc:
             raise HTTPException(503, str(exc)) from None
 
@@ -305,12 +344,10 @@ def create_app(service=None, *, webhook_token: str | None = None,
                     if archived:
                         portal_store.ensure_group(chat_id)
                         portal_store.upsert_messages(chat_id, [archived])
-                        # KB work is incremental and debounced. Start it when the
-                        # message is archived rather than after slower plan extraction.
                         knowledge_fn = getattr(service, "knowledge_fn", None)
                         if knowledge_fn:
                             knowledge_fn(chat_id)
-        incoming = normalize_webhook(payload)
+        incoming = normalize_webhook(payload, allowed_direct_chat_ids=allowed_chats)
         if incoming is None:
             return {"accepted": False}
         message = ChatMessage(**incoming.__dict__)

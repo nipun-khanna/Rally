@@ -3,6 +3,8 @@
 import re
 from urllib.parse import urlsplit
 
+from app.bluebubbles import is_private_direct_chat
+
 
 _DASHBOARD = re.compile(
     r"\b(?:admin\s+dashboard|"
@@ -34,17 +36,23 @@ def _hosted_origin(app_url: str | None) -> str | None:
     return origin
 
 
-def admin_dashboard_reply(message, portal_store, app_url: str | None) -> str | None:
+def admin_dashboard_reply(message, portal_store, app_url: str | None,
+                          resolve_public_id=None) -> str | None:
     """Reply with the public archive URL. Never include an admin token or chat GUID."""
     if not _DASHBOARD.search(getattr(message, "text", None) or ""):
         return None
     chat_id = getattr(message, "chat_id", None)
-    if not isinstance(chat_id, str) or ";+;" not in chat_id:
+    if not isinstance(chat_id, str) or (
+            ";+;" not in chat_id and not is_private_direct_chat(chat_id)):
         return None
     origin = _hosted_origin(app_url)
-    if origin is None or portal_store is None:
+    resolve = resolve_public_id or (portal_store.ensure_group if portal_store is not None else None)
+    if origin is None or resolve is None:
         return _UNPUBLISHED
-    public_id = portal_store.ensure_group(chat_id)
+    try:
+        public_id = resolve(chat_id)
+    except PermissionError:
+        return _UNPUBLISHED
     url = f"{origin}/{public_id}"
     if _ADMIN_ASK.search(message.text or ""):
         return hosted_page_reply(url, admin=True)

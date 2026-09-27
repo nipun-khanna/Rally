@@ -11,12 +11,24 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import time
 
+from pathlib import Path
+import tempfile
+
 from app.agent import GroupConversationDecision, GrokProviderError
 from app.availability import AvailabilityWindow, choose_slot, looks_like_availability, parse_availability
 from app.bluebubbles import DeliveryUncertainError
 from app.group_memory import eligible_fact
 from app.group_safety import (forget_phrase, illegal_assistance_request,
                               parse_forget_command, refusal_text)
+from app.browser.agent import looks_like_browser_request
+from app.media import (
+    image_prompt,
+    looks_like_image_request,
+    looks_like_video_request,
+    media_filename,
+    video_prompt,
+    wants_generated_video,
+)
 from app.models import ChatMessage, Plan, PlanFacts, Proposal
 from app.message_text import remove_rally_signature
 from app.latency import record_latency
@@ -38,11 +50,21 @@ _SHORT_FOLLOWUP = re.compile(
     re.I,
 )
 _RECAP_ASK = re.compile(
-    r"\b(recap|what'?s the plan|what have we decided|what did we (?:decide|land on)|"
-    r"next step|what people said|what did .+ say)\b",
+    r"\b(recap|what'?s the plan|what have we decided|what did we (?:decide|land on))\b",
     re.I,
 )
 _PICK_ASK = re.compile(r"\b(pick|lock|choose|decide)\b", re.I)
+_HOW_TO = re.compile(r"\bhow (?:to|do|can|would|should)\b", re.I)
+_LINKED_LIST = re.compile(r"\blinked\s*lists?\b", re.I)
+_RESERVATION_ASK = re.compile(
+    r"\b(?:make a res(?:ervation)?|book(?:\s+a\s+table)?|reserve(?:\s+it)?|"
+    r"(?:can|could) you (?:make|book))\b",
+    re.I,
+)
+_VENUE_CHOICE = re.compile(
+    r"\b(?:go with|go to|let's (?:do|go(?:\s+with)?))\s+([A-Za-z][A-Za-z0-9']+)",
+    re.I,
+)
 _CANCEL_PLAN = re.compile(
     r"^\s*(?:(?:hey|hi|hello|yo|ok|okay)[,\s]+)?@?rally\b[\s,:!?-]*"
     r"(?:please\s+)?(?:cancel|stop|drop|scrap|abort)\s+(?:(?:the|our|this|current)\s+)?"
@@ -64,6 +86,7 @@ _PLACE_NEAR = re.compile(
     r"\b(?:near|in)\s+([A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z][A-Za-z0-9]*)?)",
     re.I,
 )
+_LIVE_IN = re.compile(r"\b(?:live|lives|living|staying)\s+in\b", re.I)
 _PLACE_HINT = re.compile(
     r"\b(midtown|downtown|uptown|brooklyn|manhattan|queens|williamsburg|"
     r"rambler(?:\s+atlanta)?)\b",
@@ -136,7 +159,27 @@ _CONSTRAINT_LINE = re.compile(
     r"\b(isolat\w*|allergic|can't|cannot|won't make|running late)\b",
     re.I,
 )
+_HELP_ASK = re.compile(
+    r"\b(?:what can you (?:do|help with)|what do you do|"
+    r"what are you (?:able to do|good for)|"
+    r"(?:your )?(?:capabilities|commands))\b",
+    re.I,
+)
+_BARE_HELP = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay|ask)[,\s]+)?(?:@?rally\b[\s,:!\-]*)?"
+    r"(?:help(?:\s+me)?(?:\s+out)?)\s*[?.!]*\s*$",
+    re.I,
+)
 _NO_ANSWER = re.compile(r"^\s*no(?:\s+|_)answer\s*$", re.I)
+HELP_REPLY = (
+    "i recap the plan (including pre-join history), flag conflicts, forget a "
+    "fact if you ask, and answer questions on this thread. i can pick a "
+    "restaurant — i can't book a reservation over text alone. "
+    "i can share the hosted dashboard link (never an admin token). i can "
+    "use the browser, search, and fill public forms. i can draw or send images, and "
+    "generate or send a real video. ping me and i stay in the convo for 5 min; "
+    "i'll nudge if y'all stall."
+)
 _REPEAT_TEMPLATE = re.compile(
     r"^(?:here's the plan|nothing locked yet)\b|still no spot",
     re.I,
@@ -144,6 +187,70 @@ _REPEAT_TEMPLATE = re.compile(
 _THREADED_OUTBOX_KINDS = frozenset({
     "direct_reply", "availability_ack", "availability_clarify",
 })
+
+
+def _venue_choice(text: str) -> str | None:
+    match = _VENUE_CHOICE.search(text or "")
+    if not match:
+        return None
+    name = match.group(1).strip()
+    if name.lower() in {"it", "that", "this", "dinner", "lunch", "brunch"}:
+        return None
+    return name
+
+
+def _reservation_intent(text: str) -> bool:
+    return bool(text and (_RESERVATION_ASK.search(text) or (
+        _venue_choice(text) and re.search(r"\b(?:res|book|reserve)\b", text, re.I))))
+
+
+def _knowledge_question(text: str) -> bool:
+    if not text:
+        return False
+    if _SONG_LIST.search(text) or _WHO_MADE.search(text):
+        return True
+    if _HOW_TO.search(text) or _LINKED_LIST.search(text):
+        return True
+    return False
+
+
+def _can_recap_locally(text: str) -> bool:
+    """Local plan recap only for an explicit recap/plan ask, never a question."""
+    if not text or not _RECAP_ASK.search(text):
+        return False
+    return not _knowledge_question(text) and not _reservation_intent(text)
+
+
+def _linked_list_answer(text: str) -> str | None:
+    if not text or not _LINKED_LIST.search(text):
+        return None
+    if not (_HOW_TO.search(text) or re.search(r"\breverse\b", text, re.I)):
+        return None
+    return ("walk three pointers — prev, current, next. each step set current.next "
+            "to prev, then slide prev and current forward. when current is none, "
+            "prev is the new head. that's the iterative reverse.")
+
+
+def looks_like_help_request(text: str) -> bool:
+    if not text or looks_like_image_request(text) or looks_like_video_request(text):
+        return False
+    if looks_like_browser_request(text) or _can_recap_locally(text):
+        return False
+    return bool(_HELP_ASK.search(text) or _BARE_HELP.match(text))
+
+
+def _reservation_reply(request: str, snap=None, facts=None) -> str:
+    picked = _venue_choice(request)
+    if not picked and snap:
+        picked = snap.get("place")
+    if not picked and facts:
+        picked = facts.location
+    if picked:
+        name = str(picked).split(",")[0].strip()
+        return (f"{name} works — that's the spot. i can't actually book a "
+                "reservation over text — ask me to open the site.")
+    return ("i can't actually book a reservation over text. pick a spot and "
+            "i'll lock the name, or ask me to open the site.")
 
 
 def _named_option_pick(request: str, facts) -> str | None:
@@ -171,6 +278,9 @@ def _general_local_answer(request: str, snap=None, facts=None) -> str | None:
     if _TONE_Q.search(text):
         return ("sorry, that last recap came out too sharp. i'm just here to keep the "
                 "plan straight — ask me anything and i'll actually answer it.")
+    linked = _linked_list_answer(text)
+    if linked:
+        return linked
     artist = _known_track_artist(text)
     if artist and (_WHO_MADE.search(text) or re.search(r"\bwho\b", text, re.I)):
         return f"{artist} made it."
@@ -195,9 +305,15 @@ def _general_local_answer(request: str, snap=None, facts=None) -> str | None:
 def _worth_replying(text: str) -> bool:
     if not text or not text.strip():
         return False
-    if (_RECAP_ASK.search(text) or _restaurant_intent(text) or _PICK_ASK.search(text)
+    if looks_like_image_request(text) or looks_like_video_request(text):
+        return True
+    if looks_like_help_request(text):
+        return True
+    if (_can_recap_locally(text) or _restaurant_intent(text) or _PICK_ASK.search(text)
             or _TONE_Q.search(text) or _SONG_LIST.search(text) or _WHO_MADE.search(text)
-            or _CONFUSED.search(text) or _general_local_answer(text)):
+            or _CONFUSED.search(text) or _knowledge_question(text)
+            or _reservation_intent(text) or _venue_choice(text)
+            or _general_local_answer(text)):
         return True
     if "?" in text or _SHORT_FOLLOWUP.match(text):
         return True
@@ -254,6 +370,8 @@ def _human_planning_lines(messages) -> list[tuple]:
                 "", text, flags=re.I).strip()
             if not text:
                 continue
+        if _knowledge_question(text):
+            continue
         lines.append((message.sent_at, text, message.sender_id))
     return lines
 
@@ -315,7 +433,9 @@ def _thread_snapshot(messages, memory_context: str = "", facts=None):
         if timed:
             hour, minute, suffix = timed.group(1), timed.group(2) or "00", (timed.group(3) or "").lower()
             snap["time_text"] = f"at {hour}{':' + minute if minute != '00' else ''}{suffix}".rstrip()
-        place = _PLACE_HINT.search(text) or _PLACE_NEAR.search(text)
+        place = _PLACE_HINT.search(text)
+        if not place and not _LIVE_IN.search(text):
+            place = _PLACE_NEAR.search(text)
         if place:
             snap["place"] = place.group(1)
         party = _PARTY.search(text)
@@ -334,7 +454,12 @@ def _thread_snapshot(messages, memory_context: str = "", facts=None):
         cuisine = _CUISINE.search(text)
         if cuisine and cuisine.group(1).lower() not in snap["options"]:
             snap["options"].append(cuisine.group(1).lower())
-        if _CONSTRAINT_LINE.search(text) and text not in snap["constraints"]:
+        picked = _venue_choice(text)
+        if picked:
+            snap["place"] = picked
+        if (_CONSTRAINT_LINE.search(text) and text not in snap["constraints"]
+                and not _reservation_intent(text) and not _knowledge_question(text)
+                and "?" not in text):
             snap["constraints"].append(text)
     if snap["day"] in snap["rejected_days"]:
         snap["day"] = None
@@ -460,8 +585,9 @@ class RallyService:
                  availability_fn=None, time_zone: str = "America/New_York", reply_agent=None,
                  group_memory=None, group_turns=None, react_fn=None, typing_fn=None,
                  defer_heavy_work: bool = False, history_fn=None, helper_warm_fn=None,
-                 portal_publish_fn=None, knowledge_fn=None, knowledge_store=None,
-                 knowledge_refresh_fn=None):
+                 image_fn=None, video_fn=None, video_link_fn=None,
+                 send_attachment_fn=None, portal_publish_fn=None, knowledge_fn=None,
+                 knowledge_store=None, knowledge_refresh_fn=None):
         self.store = store
         self.agent = agent
         self.reply_agent = reply_agent or agent
@@ -483,6 +609,10 @@ class RallyService:
         self.defer_heavy_work = defer_heavy_work
         self.history_fn = history_fn
         self.helper_warm_fn = helper_warm_fn
+        self.image_fn = image_fn
+        self.video_fn = video_fn
+        self.video_link_fn = video_link_fn
+        self.send_attachment_fn = send_attachment_fn
         self.portal_publish_fn = portal_publish_fn
         self.knowledge_fn = knowledge_fn
         self.knowledge_store = knowledge_store
@@ -868,7 +998,7 @@ class RallyService:
             incoming_stall=incoming_stall)
 
     def _maybe_revive_from_inbound(self, message: ChatMessage, plan) -> bool:
-        if plan is None or _idle_chatter(message.text) or not _stall_signal(message.text):
+        if plan is None or not _stall_signal(message.text):
             return False
         if not self._should_revive(plan, message.sent_at, incoming_stall=True):
             return False
@@ -890,11 +1020,12 @@ class RallyService:
         if place and _FOOD_ACTIVITY.search((facts.activity or "") + " " + (snap.get("activity") or "")):
             text = self._recommend_restaurant(facts, messages, memory)
         elif cuisine:
-            text = (f"we're at {cuisine} / {when} / still no spot — "
-                    "want me to pick a restaurant that fits?")
+            text = (f"still no restaurant for {cuisine} {when}"
+                    f"{f' near {place}' if place else ''} — "
+                    "want me to pick one that fits?")
         else:
-            text = (f"the {facts.activity or 'plan'} is still open ({when}). "
-                    "want me to lock a spot?")
+            text = (f"{facts.activity or 'the plan'} is still open ({when}). "
+                    "want me to lock a time or spot?")
         if self._same_recent_outbound(plan.chat_id, text):
             self.store.mark_intervened(plan.id, plan.version, now)
             return False
@@ -1191,6 +1322,20 @@ class RallyService:
     def _handle_addressed_message(self, message: ChatMessage, plan, messages,
                                   *, direct_call: bool, followup: bool) -> bool:
         """Reply to a Rally call or open follow-up. True skips plan extraction."""
+        if illegal_assistance_request(message.text):
+            self._react(message, SEEN_REACTION)
+            self._send_group_reply(message, refusal_text(), allow_flood=True)
+            self._react(message, None)
+            self._note_turn(message)
+            return False
+        if looks_like_video_request(message.text):
+            self._react(message, SEEN_REACTION)
+            self._handle_video_request(message)
+            return True
+        if looks_like_image_request(message.text):
+            self._react(message, SEEN_REACTION)
+            self._handle_image_request(message)
+            return True
         if followup and not direct_call and _idle_chatter(message.text):
             return False
         coalesced = bool(self.group_turns and self.group_turns.should_coalesce(
@@ -1203,11 +1348,6 @@ class RallyService:
             if forget is not None:
                 self._reply_forget(message, forget)
                 return False
-        if illegal_assistance_request(message.text):
-            self._send_group_reply(message, refusal_text(), allow_flood=True)
-            self._react(message, None)
-            self._note_turn(message)
-            return False
         if coalesced:
             self._note_turn(message)
             return False
@@ -1278,6 +1418,117 @@ class RallyService:
             self._set_typing(message, False)
             self._decision_inflight.discard(message.message_id)
 
+    def _write_temp_media(self, data: bytes, name: str) -> str:
+        handle = tempfile.NamedTemporaryFile(prefix="rally-media-", suffix=Path(name).suffix,
+                                             delete=False)
+        try:
+            handle.write(data)
+            handle.close()
+            return handle.name
+        except Exception:
+            handle.close()
+            Path(handle.name).unlink(missing_ok=True)
+            raise
+
+    def _send_media_file(self, message: ChatMessage, data: bytes, *, kind: str) -> bool:
+        if not self.send_attachment_fn or not data:
+            return False
+        name, mime = media_filename(data, kind=kind)
+        path = self._write_temp_media(data, name)
+        try:
+            self.send_attachment_fn(message.chat_id, path, name=name, mime_type=mime)
+            return True
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def _finish_media(self, message: ChatMessage):
+        delivered = self.store.sent_message("direct_reply", message.message_id)
+        self._finish_reaction(message, delivered=delivered)
+        self._note_turn(message)
+        self.store.mark_processed(message.message_id)
+
+    def _handle_image_request(self, message: ChatMessage):
+        self._set_typing(message, True)
+        try:
+            data = None
+            if self.image_fn:
+                try:
+                    data = self.image_fn(image_prompt(message.text))
+                except Exception as exc:
+                    _log_scheduled_failure("image generate", exc)
+            if isinstance(data, (bytes, bytearray)) and data:
+                try:
+                    if self._send_media_file(message, bytes(data), kind="image"):
+                        self._send_group_reply(message, "here you go.", allow_flood=False)
+                    else:
+                        self._send_group_reply(
+                            message, "couldn't send that image. try me again.", allow_flood=True)
+                except Exception as exc:
+                    _log_scheduled_failure("image send", exc)
+                    self._send_group_reply(
+                        message, "couldn't send that image. try me again.", allow_flood=True)
+            else:
+                self._send_group_reply(
+                    message, "couldn't generate that image. try me again.", allow_flood=True)
+            self._finish_media(message)
+        finally:
+            self._set_typing(message, False)
+
+    def _try_video_bytes(self, prompt: str):
+        if not self.video_fn:
+            return None
+        try:
+            data = self.video_fn(prompt)
+        except Exception as exc:
+            _log_scheduled_failure("video generate", exc)
+            return None
+        return data if isinstance(data, (bytes, bytearray)) and data else None
+
+    def _try_video_url(self, prompt: str):
+        if not self.video_link_fn:
+            return None
+        try:
+            url = self.video_link_fn(prompt)
+        except Exception as exc:
+            _log_scheduled_failure("video link", exc)
+            return None
+        return url if isinstance(url, str) and url.startswith("https://") else None
+
+    def _handle_video_request(self, message: ChatMessage):
+        self._set_typing(message, True)
+        try:
+            prompt = video_prompt(message.text)
+            data = None
+            url = None
+            if wants_generated_video(message.text):
+                data = self._try_video_bytes(prompt)
+                if data is None:
+                    url = self._try_video_url(prompt)
+            else:
+                url = self._try_video_url(prompt)
+                if url is None:
+                    data = self._try_video_bytes(prompt)
+            if data is not None:
+                try:
+                    if self._send_media_file(message, bytes(data), kind="video"):
+                        self._send_group_reply(message, "here you go.", allow_flood=False)
+                    else:
+                        self._send_group_reply(
+                            message, "couldn't send that video. try me again.", allow_flood=True)
+                except Exception as exc:
+                    _log_scheduled_failure("video send", exc)
+                    self._send_group_reply(
+                        message, "couldn't send that video. try me again.", allow_flood=True)
+            elif url:
+                self._send_group_reply(message, f"here: {url}", allow_flood=False)
+            else:
+                self._send_group_reply(
+                    message, "couldn't find a real video for that. try a more specific clip.",
+                    allow_flood=True)
+            self._finish_media(message)
+        finally:
+            self._set_typing(message, False)
+
     def _priority_command_answer(self, message: ChatMessage, messages) -> tuple[str, bool] | None:
         if self.portal_handler:
             answer = self.portal_handler(message)
@@ -1323,12 +1574,18 @@ class RallyService:
 
     def _has_local_reply(self, message: ChatMessage, plan) -> bool:
         text = message.text or ""
-        if _RECAP_ASK.search(text):
+        if looks_like_help_request(text):
+            return True
+        if looks_like_browser_request(text) and not _can_recap_locally(text):
+            return False
+        if _can_recap_locally(text):
             return True
         facts = plan.facts if plan else None
         if _named_option_pick(text, facts) is not None:
             return True
         if _general_local_answer(text):
+            return True
+        if _reservation_intent(text) or _venue_choice(text):
             return True
         if _restaurant_intent(text):
             messages = self.store.recent_messages(message.chat_id)
@@ -1339,21 +1596,25 @@ class RallyService:
 
     def _local_decision_reply(self, plan, messages, memory_context: str = "",
                              request: str = "") -> str:
+        if looks_like_help_request(request):
+            return HELP_REPLY
         facts = plan.facts if plan else None
         picked = _named_option_pick(request, facts)
         if picked:
             options = list(getattr(facts, "preferred_cuisines", None) or [])
             return _option_why(picked, facts, options)
+        snap = _thread_snapshot(messages, memory_context, facts)
+        if _reservation_intent(request) or _venue_choice(request):
+            return _reservation_reply(request, snap, facts)
         if _restaurant_intent(request):
             return self._recommend_restaurant(facts, messages, memory_context)
-        snap = _thread_snapshot(messages, memory_context, facts)
         grounded = _grounded_fact_answer(request, snap, memory_context)
         if grounded:
             return grounded
         general = _general_local_answer(request, snap, facts)
         if general:
             return general
-        if _RECAP_ASK.search(request or ""):
+        if _can_recap_locally(request or ""):
             return _recap_from_snapshot(snap, facts, self._proposal_context(plan) if plan else None)
         return ("i'm here — ask for a recap, a restaurant pick, or whatever you actually want.")
 

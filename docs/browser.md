@@ -1,6 +1,6 @@
 # Local browser setup
 
-Rally's browser is optional and disabled by default. It runs on the same Mac as Rally and BlueBubbles. Only the configured private owner chat can use it. That GUID contains `;-;` (semicolon-minus), usually `iMessage;-;…` or `any;-;…` on this Mac's BlueBubbles. Group chats use `;+;` (including HackGT13) and never receive the owner profile, cookies, or browser tool.
+Rally's browser is optional and disabled by default. It runs on the same Mac as Rally and BlueBubbles. Anyone in an allowlisted Rally chat (`RALLY_ALLOWED_CHAT_GUIDS`) can ask Rally to search, open a site, fill a public form, or walk a reservation up to the sign-in page. Off-allowlist chats are ignored. A message must ping Rally or arrive during the 5-minute active turn. Rally never invents passwords or claims a booking is done; it waits on the Mac for a human to confirm.
 
 ## Install and configure
 
@@ -16,6 +16,7 @@ The Chromium download adds a few hundred megabytes. Rally does not download it d
 | Variable | Purpose |
 | --- | --- |
 | `RALLY_BROWSER_ENABLED=1` | Opt in. Defaults off. |
+| `RALLY_BROWSER_DEBUG=1` | DEBUG logs on `rally.browser` (launch args, tool calls, recover, Playwright tracebacks). Watch the 8770 process stdout. |
 | `RALLY_BROWSER_OWNER_CHAT_ID` | Exact private chat GUID (`iMessage;-;…` or `any;-;…`). Group GUIDs (`*;+;*`) are rejected. |
 | `RALLY_BROWSER_OWNER_SENDER_ID` | Exact BlueBubbles sender handle (phone, email, or `local-imessage-account` if you text from this Mac). |
 | `RALLY_BROWSER_ADMIN_TOKEN` | Separate from `RALLY_ADMIN_TOKEN`. At least 32 characters. Required for `/browser/status`, `/browser/start`, and `/browser/stop`. |
@@ -23,8 +24,23 @@ The Chromium download adds a few hundred megabytes. Rally does not download it d
 | `RALLY_BROWSER_DOWNLOAD_PATH` | Download directory under `data/browser/`. Default `data/browser/downloads`. |
 | `RALLY_BROWSER_MAX_ACTIONS` | 1–12 planner steps. Default 6. |
 | `RALLY_BROWSER_MAX_TEXT_CHARS` | 1000–12000 observation characters. Default 6000. |
+| `RALLY_BROWSER_USE_API_KEY` | Optional Browser Use Cloud key. When set, search/open/fill/reserve go through the vendor agent (`POST /api/v4/runs`). Also accepts `BROWSER_USE_API_KEY`. |
+| `RALLY_BROWSERBASE_API_KEY` | Optional Browserbase key for stealth CDP on the local Grok planner fallback. Also accepts `BROWSERBASE_API_KEY`. |
+| `RALLY_BROWSERBASE_PROJECT_ID` | Optional. Also accepts `BROWSERBASE_PROJECT_ID`. Inferred from the API key when omitted. |
 
 Generate the admin token with `python -c 'import secrets; print(secrets.token_urlsafe(32))'`. Do not reuse `RALLY_ADMIN_TOKEN`.
+
+## Hosted agent (Browser Use)
+
+Search, open, fill, and reserve-until-human go through a vendor browser agent, not a raw `page.goto` script.
+
+1. Create an API key at [cloud.browser-use.com/settings](https://cloud.browser-use.com/settings?tab=api-keys&new=1).
+2. Set `RALLY_BROWSER_USE_API_KEY` (or `BROWSER_USE_API_KEY`) in `.env`.
+3. Restart 8770. `/browser/status` reports `backend=browser-use` when the key is loaded.
+
+Rally sends the chat request plus a no-password / `WAIT_FOR_HUMAN` policy to Browser Use Cloud (`POST https://api.browser-use.com/api/v4/runs`). The vendor agent plans clicks, types, and extracts. CAPTCHA and stealth stay on their side.
+
+Without a Browser Use key, Rally falls back to the local one-thread Playwright worker and Rally's Grok planner. Local search uses Google Maps to avoid `/sorry` interstitials. An optional `RALLY_BROWSERBASE_API_KEY` still attaches stealth CDP to that local fallback. Reservations always stop at `wait_for_human` and never submit passwords.
 
 ## Find the owner chat GUID and sender
 
