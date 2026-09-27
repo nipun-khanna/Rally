@@ -59,7 +59,7 @@ class ServiceTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_direct_address_replies_once_in_same_chat_with_plan_context(self):
-        message = ChatMessage("direct-1", "chat1", "nick", "Hey Rally where should we eat?", NOW)
+        message = ChatMessage("direct-1", "chat1", "nick", "Hey Rally, what's the vibe?", NOW)
         self.assertTrue(self.service.receive(message))
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0][0], "chat1")
@@ -75,7 +75,7 @@ class ServiceTests(unittest.TestCase):
                                               f"Message {number}", NOW + timedelta(seconds=number)))
         self.store.add_message(ChatMessage("other-group", "chat2", "outsider", "Private", NOW))
         self.store.add_message(ChatMessage("bot-message", "chat1", "rally", "Bot", NOW, True))
-        message = ChatMessage("direct-window", "chat1", "nick", "Hey Rally, where should we eat?",
+        message = ChatMessage("direct-window", "chat1", "nick", "Hey Rally, what's the vibe?",
                               NOW + timedelta(seconds=26))
         self.service.receive(message)
         direct_messages = self.agent.direct_calls[-1][2]
@@ -106,7 +106,7 @@ class ServiceTests(unittest.TestCase):
             return "working on it"
 
         self.agent.answer_direct = slow_answer
-        message = ChatMessage("react-direct", "chat1", "nick", "Rally, where should we eat?", NOW)
+        message = ChatMessage("react-direct", "chat1", "nick", "Rally, what's the vibe?", NOW)
         self.assertTrue(self.service.receive(message))
         self.assertEqual(seen_before_reply[0], [("chat1", "react-direct", "👀")])
         self.assertEqual(reactions, [
@@ -128,6 +128,48 @@ class ServiceTests(unittest.TestCase):
         self.service.send_fn = lambda chat_id, text: (_ for _ in ()).throw(RuntimeError("offline"))
         self.assertTrue(self.service.receive(ChatMessage("react-fail", "chat1", "nick", "Rally, recap?", NOW)))
         self.assertEqual(reactions, ["👀"])
+
+    def test_direct_reply_sends_in_the_inbound_message_thread(self):
+        sent = []
+
+        def send(chat_id, text, selected_message_guid=None):
+            sent.append((chat_id, text, selected_message_guid))
+
+        self.service.send_fn = send
+        message = ChatMessage("inbound-guid", "chat1", "nick", "Hey Rally, recap?", NOW)
+        self.assertTrue(self.service.receive(message))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "chat1")
+        self.assertTrue(sent[0][1])
+        self.assertEqual(sent[0][2], "inbound-guid")
+
+    def test_eyes_attempted_when_invalid_guid_does_not_crash_receive(self):
+        reactions = []
+
+        def react(chat_id, message_id, reaction):
+            reactions.append((chat_id, message_id, reaction))
+            raise ValueError("A target message GUID is required")
+
+        sent = []
+
+        def send(chat_id, text, selected_message_guid=None):
+            sent.append((chat_id, text, selected_message_guid))
+
+        self.service.react_fn = react
+        self.service.send_fn = send
+        message = ChatMessage("bad guid", "chat1", "nick", "Rally, recap?", NOW)
+        self.assertTrue(self.service.receive(message))
+        self.assertEqual(reactions[0], ("chat1", "bad guid", "👀"))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][2], "bad guid")
+
+    def test_seen_message_warms_helper_without_blocking_reply(self):
+        warmed = []
+        self.service.helper_warm_fn = lambda: warmed.append("warm")
+        self.assertTrue(self.service.receive(
+            ChatMessage("warm-1", "chat1", "nick", "Rally, recap?", NOW)))
+        self.assertEqual(warmed, ["warm"])
+        self.assertEqual(len(self.sent), 1)
 
     def test_short_question_after_direct_reply_carries_one_followup_turn(self):
         first = ChatMessage("direct-followup-1", "chat1", "nick",

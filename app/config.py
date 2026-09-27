@@ -15,7 +15,7 @@ from app.history import BlueBubblesHistoryClient, planning_message_from_archive
 from app.group_memory import GroupMemoryStore
 from app.group_turns import GroupTurnStore
 from app.message_text import add_rally_signature
-from app.reactions import send_reaction, set_typing
+from app.reactions import helper_status, send_reaction, set_typing
 from app.calendar import (CalendarApproval, CalendarCredentials, CalendarError,
                           create_calendar_event, get_calendar_busy)
 from app.muse import MuseExtractor
@@ -29,6 +29,7 @@ from app.adaptive.store import AdaptiveStore
 from app.adaptive.tools import build_default_registry
 from app.adaptive.generator import CapabilityDraft, CapabilityProposalGenerator
 from app.adaptive.proposals import CapabilityProposalStore
+from app.envfile import resolve_settings_env
 
 
 @dataclass(frozen=True)
@@ -84,8 +85,9 @@ class Settings:
     owner_display_name: str = ""
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
-        source = env if env is not None else os.environ
+    def from_env(cls, env: Mapping[str, str] | None = None, *,
+                 dotenv_path: Path | str | None = None) -> "Settings":
+        source = resolve_settings_env(env, dotenv_path=dotenv_path)
         stall_minutes = int(source.get("RALLY_STALL_MINUTES", "30"))
         tick_seconds = int(source.get("RALLY_TICK_SECONDS", "60"))
         max_requests = int(source.get("RALLY_MAX_PLACE_REQUESTS", "100"))
@@ -247,11 +249,23 @@ def build_service(settings: Settings) -> RallyService:
             raise PlacesError("Free place-search budget reached")
         return search_places(settings.geoapify_api_key, latitude, longitude)
 
-    def send(chat_id: str, text: str):
+    def send(chat_id: str, text: str, selected_message_guid: str | None = None):
         if not settings.bluebubbles_url or not settings.bluebubbles_password:
             raise RuntimeError("BlueBubbles is not configured")
+        # selectedMessageGuid forces BlueBubbles onto Private API. Only thread
+        # when the helper is already known connected so unthreaded text still
+        # lands if SIP/helper is off.
+        if selected_message_guid and helper_status(
+                settings.bluebubbles_url, settings.bluebubbles_password, wait=False).status != "sent":
+            selected_message_guid = None
         return send_message(settings.bluebubbles_url, settings.bluebubbles_password, chat_id,
-                            add_rally_signature(text))
+                            add_rally_signature(text),
+                            selected_message_guid=selected_message_guid)
+
+    def warm_helper():
+        if not settings.bluebubbles_url or not settings.bluebubbles_password:
+            return None
+        return helper_status(settings.bluebubbles_url, settings.bluebubbles_password, wait=True)
 
     calendar_fn = None
     availability_fn = None
@@ -310,8 +324,11 @@ def build_service(settings: Settings) -> RallyService:
     def react(chat_id: str, message_id: str, reaction: str):
         if not settings.bluebubbles_url or not settings.bluebubbles_password:
             return None
-        return send_reaction(settings.bluebubbles_url, settings.bluebubbles_password,
-                             chat_id, message_id, reaction, wait_for_helper=False)
+        try:
+            return send_reaction(settings.bluebubbles_url, settings.bluebubbles_password,
+                                 chat_id, message_id, reaction, wait_for_helper=False)
+        except ValueError:
+            return None
 
     def typing(chat_id: str, on: bool):
         if not settings.bluebubbles_url or not settings.bluebubbles_password:
@@ -354,7 +371,7 @@ def build_service(settings: Settings) -> RallyService:
                         group_memory=GroupMemoryStore(settings.database_path),
                         group_turns=GroupTurnStore(settings.database_path),
                         react_fn=react, typing_fn=typing, defer_heavy_work=True,
-                        history_fn=history_fn,
+                        history_fn=history_fn, helper_warm_fn=warm_helper,
                         portal_publish_fn=publish_trigger,
                         knowledge_fn=knowledge_fn, knowledge_store=knowledge_store,
                         knowledge_refresh_fn=knowledge_refresh_fn)

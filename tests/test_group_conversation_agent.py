@@ -147,8 +147,13 @@ def test_neutral_legal_discussion_is_not_a_local_refusal():
     assert "warm, not mean" in system
     assert "chill friend" in system
     assert "profanity" in system or "swear" in system
+    assert "friend" in system
+    assert "bully" in system or "do not insult" in system
+    assert "take a side" in system or "take sides" in system
     assert "always talk" in system or "must talk" in system or "always gets a" in system
     assert "corporate" in system or "safety bot" in system
+    assert "feral" not in system
+    assert "deranged" not in system
 
 
 def test_conversation_prompt_direct_call_requires_a_useful_message():

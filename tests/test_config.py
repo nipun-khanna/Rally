@@ -11,6 +11,22 @@ from app.calendar import CalendarEvent, CalendarError
 from app.models import Proposal
 
 
+def test_dotenv_keeps_unquoted_semicolon_guid_and_repairs_truncated_shell_env(tmp_path, monkeypatch):
+    envfile = tmp_path / ".env"
+    envfile.write_text(
+        "RALLY_BROWSER_ENABLED=1\n"
+        "RALLY_BROWSER_OWNER_CHAT_ID=any;-;+15555550100\n"
+        "RALLY_BROWSER_OWNER_SENDER_ID=local-imessage-account\n"
+        "RALLY_BROWSER_ADMIN_TOKEN=W6SWqB8dA_5f5SUS2ms-CNu0WhxFLBL34ff2A7vfVBQ\n"
+    )
+    monkeypatch.delenv("RALLY_BROWSER_OWNER_CHAT_ID", raising=False)
+    settings = Settings.from_env(None, dotenv_path=envfile)
+    assert settings.browser_owner_chat_id == "any;-;+15555550100"
+    monkeypatch.setenv("RALLY_BROWSER_OWNER_CHAT_ID", "any")
+    repaired = Settings.from_env(None, dotenv_path=envfile)
+    assert repaired.browser_owner_chat_id == "any;-;+15555550100"
+
+
 def test_browser_defaults_off_and_requires_private_owner():
     settings = Settings.from_env({})
     assert settings.browser_enabled is False
@@ -207,6 +223,32 @@ class ConfigTests(unittest.TestCase):
                 service.typing_fn("any;+;chat1", True)
             self.assertIs(react.call_args.kwargs.get("wait_for_helper"), False)
             self.assertIs(typing.call_args.kwargs.get("wait_for_helper"), False)
+
+    def test_live_send_forwards_thread_guid_and_react_swallows_invalid_guid(self):
+        from app.reactions import ReactionResult
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings.from_env({
+                "RALLY_DATABASE_PATH": str(Path(tmp) / "r.sqlite3"),
+                "RALLY_BLUEBUBBLES_URL": "http://127.0.0.1:1234",
+                "RALLY_BLUEBUBBLES_PASSWORD": "secret",
+            })
+            connected = ReactionResult("sent", "BlueBubbles Private API helper is connected")
+            with patch("app.config.helper_status", return_value=connected), \
+                    patch("app.config.send_message") as send:
+                service = build_service(settings)
+                service.send_fn("any;+;chat1", "got it", selected_message_guid="inbound-1")
+            self.assertEqual(send.call_args.args[2], "any;+;chat1")
+            self.assertEqual(send.call_args.kwargs.get("selected_message_guid"), "inbound-1")
+            self.assertTrue(send.call_args.args[3].startswith("Rally: "))
+            unsupported = ReactionResult("unsupported", "BlueBubbles Private API helper is not connected")
+            with patch("app.config.helper_status", return_value=unsupported), \
+                    patch("app.config.send_message") as send:
+                service = build_service(settings)
+                service.send_fn("any;+;chat1", "got it", selected_message_guid="inbound-1")
+            self.assertIsNone(send.call_args.kwargs.get("selected_message_guid"))
+            with patch("app.config.send_reaction", side_effect=ValueError("bad guid")):
+                service = build_service(settings)
+                self.assertIsNone(service.react_fn("not-a-group", "bad guid", "👀"))
 
     def test_calendar_is_opt_in_and_capped_before_provider_call(self):
         with self.assertRaises(ValueError):

@@ -29,7 +29,7 @@ _FACILITATION = re.compile(
     re.I | re.S,
 )
 _FORGET = re.compile(
-    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay)[,\s]+)?@?rally\b[\s,:!\-]*"
+    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay|ask)[,\s]+)?@?rally\b[\s,:!\-]*"
     r"forget(?:\s+(.*))?$",
     re.I | re.S,
 )

@@ -95,6 +95,28 @@ class BrowserTaskService:
         self.transport = transport
         self.settings = settings
 
+    def _observe(self, context: ToolContext):
+        try:
+            return self.runtime.observe(chat_id=context.chat_id, authenticated=True)
+        except Exception:
+            recover = getattr(self.runtime, "recover", None)
+            if recover is None:
+                raise
+            recover()
+            return self.runtime.observe(chat_id=context.chat_id, authenticated=True)
+
+    def _act(self, context: ToolContext, action: dict):
+        try:
+            return self.runtime.act(
+                chat_id=context.chat_id, authenticated=True, action=action)
+        except Exception:
+            recover = getattr(self.runtime, "recover", None)
+            if recover is None:
+                raise
+            recover()
+            return self.runtime.act(
+                chat_id=context.chat_id, authenticated=True, action=action)
+
     def _authenticated(self, context: ToolContext) -> bool:
         return (
             context.chat_id == self.settings.browser_owner_chat_id
@@ -120,10 +142,12 @@ class BrowserTaskService:
             return {"status": row["status"],
                     "answer": "That browser request is already finished and will not be replayed."}
         try:
-            observation = self.runtime.observe(chat_id=context.chat_id, authenticated=True)
+            observation = self._observe(context)
         except Exception:
             self.store.mark_status(row["id"], "failed")
-            return {"status": "failed", "answer": "The browser crashed or is unavailable."}
+            return {"status": "failed",
+                    "answer": ("The browser crashed or is unavailable. "
+                               "I restarted it — ask Rally again to open the site.")}
         for _ in range(self.settings.browser_max_actions):
             raw = self.transport(
                 BrowserActionDecision, _PROMPT,
@@ -155,8 +179,7 @@ class BrowserTaskService:
                     "url": observation.url,
                 }
             try:
-                result = self.runtime.act(
-                    chat_id=context.chat_id, authenticated=True, action=action)
+                result = self._act(context, action)
             except TimeoutError:
                 host, path = audit_url_parts(observation.url)
                 self.store.mark_status(row["id"], "uncertain", host=host, path=path)
@@ -166,7 +189,8 @@ class BrowserTaskService:
                 self.store.mark_status(row["id"], "failed")
                 detail = "crashed" if "crash" in str(exc).lower() else "unavailable"
                 return {"status": "failed",
-                        "answer": f"The browser crashed or is unavailable ({detail})."}
+                        "answer": (f"The browser crashed or is unavailable ({detail}). "
+                                   "I restarted it — ask Rally again to open the site.")}
             if result.get("status") == "blocked":
                 self.store.mark_status(row["id"], "blocked")
                 return {"status": "blocked",

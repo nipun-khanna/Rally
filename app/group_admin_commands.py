@@ -11,12 +11,12 @@ _DASHBOARD = re.compile(
     re.I,
 )
 _ADMIN_ASK = re.compile(r"\badmin\s+dashboard\b", re.I)
-_UNPUBLISHED = ("the hosted page isn't live yet — "
+_UNPUBLISHED = ("hosted page isn't live yet. "
                 "the admin desk stays on the Mac that runs Rally.")
 
 
 def hosted_page_reply(url: str, *, admin: bool = False) -> str:
-    """Casual, useful archive pointer. Never attach a token or chat GUID."""
+    """Casual archive pointer. Never attach a token or chat GUID."""
     lead = f"here's the group page: {url}"
     if admin:
         return (f"{lead} the admin desk stays on the Mac that runs Rally — "

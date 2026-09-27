@@ -31,6 +31,7 @@ class ScriptedDriver:
 
     def stop(self):
         self.closed = True
+        self.current = {}
 
     def observe(self, chat_id, authenticated):
         page = self.current.get(chat_id, {"url": "", "title": "", "text": "", "controls": ()})
@@ -109,6 +110,20 @@ def test_runtime_navigates_and_isolates_chats(tmp_path):
     runtime.stop()
     assert driver.closed is True
     assert driver.proxy_url == "socks5://127.0.0.1:1"
+
+
+def test_runtime_recover_recreates_a_dead_session(tmp_path):
+    driver = ScriptedDriver()
+    runtime = BrowserRuntime(tmp_path / "profile", tmp_path / "downloads",
+                             None, 6000, driver=driver, resolver=public_resolver)
+    runtime.start()
+    runtime.act(chat_id="iMessage;-;owner", authenticated=True,
+                action={"action": "navigate", "url": "https://news.example.com/article"})
+    status = runtime.recover()
+    assert status["running"] is True
+    assert driver.closed is True
+    seen = runtime.observe(chat_id="iMessage;-;owner", authenticated=True)
+    assert seen.url == ""
 
 
 def test_runtime_blocks_private_redirect_and_popup_and_exe_download(tmp_path):

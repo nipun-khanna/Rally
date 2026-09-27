@@ -83,6 +83,7 @@ def test_missing_app_url_does_not_text_localhost():
     reply, portal = handle("Rally, send the dashboard", app_url="")
     assert reply is not None
     assert reply.strip() != "", reply
+    assert "page" in reply.lower()
     assert "127.0.0.1" not in reply
     assert "http" not in reply.lower()
     assert "token=" not in reply
