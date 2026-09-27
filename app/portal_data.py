@@ -9,14 +9,45 @@ from app.portal_search import find_historical_plans
 
 logger = logging.getLogger(__name__)
 
+_STATE_LABELS = {"SPARK": "", "INTEREST": "",
+                 "ALIGNMENT": "Picking details", "BLOCKED": "Needs input",
+                 "READY": "Ready to book", "EXECUTING": "Booking", "DONE": "Confirmed"}
+
+
+def _human_date(date_str: str, today: "datetime.date") -> str:
+    if not date_str:
+        return ""
+    try:
+        value = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return date_str
+    delta = (value - today).days
+    if delta == 0:
+        return "Today"
+    if delta == 1:
+        return "Tomorrow"
+    if 0 < delta < 7:
+        return value.strftime("%A")
+    return value.strftime("%b %-d")
+
+
+def _human_time(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.strptime(value, "%H:%M")
+    except ValueError:
+        return value
+    return parsed.strftime("%-I:%M %p")
+
 
 def build_portal_data(service, portal_store, group: dict, *, before: str | None = None,
-                      old_plan_query: str | None = None) -> dict:
+                      old_plan_query: str | None = None, owner_name: str = "") -> dict:
     chat_id = group["chat_id"]
     group_id = group["public_id"]
     raw_messages = portal_store.list_messages(chat_id, before=before, limit=100)
     labels = {m["sender_id"]: m["display_name"] for m in portal_store.members(chat_id)}
-    labels.setdefault("local-imessage-account", "You")
+    labels.setdefault("local-imessage-account", owner_name.strip() or "You")
     messages = [{"sender": labels.get(m["sender_id"], m["sender_id"]),
                  "timestamp": m["sent_at"], "text": m["text"],
                  "reactions": [{"sender": labels.get(r["sender_id"], r["sender_id"]),
@@ -26,10 +57,17 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
                     "available": a["status"] == "available", "mime": a["mime_type"]}
                     for a in m["attachments"]]} for m in reversed(raw_messages)]
     plans = []
+    today = datetime.now(timezone.utc).date().isoformat()
     for plan in service.store.plans_for_chat(chat_id):
+        if plan.state == "ABANDONED":
+            continue
+        if plan.facts.date and plan.facts.date < today and plan.state == "DONE":
+            continue
         details = []
         proposal = service.store.latest_proposal(plan.id)
+        venue = None
         if proposal:
+            venue = proposal.venue_name
             details.append(f"Proposed {proposal.venue_name} for {proposal.date} at {proposal.time} ({proposal.status}).")
             reservation = service.store.reservation(proposal.id)
             if reservation:
@@ -37,25 +75,48 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
             calendar = service.store.calendar_result(proposal.id)
             if calendar:
                 details.append(f"Calendar {calendar['status']}.")
+        needs = []
+        if not plan.facts.time:
+            needs.append("a time")
+        if not (venue or plan.facts.location):
+            needs.append("a place")
+        today_date = datetime.now(timezone.utc).date()
         plans.append({"title": plan.facts.goal or plan.facts.activity or "Group plan",
-                      "state": plan.state, "date": plan.facts.date or "",
-                      "details": details})
+                      "state": _STATE_LABELS.get(plan.state, plan.state.title()),
+                      "date": plan.facts.date or "", "date_label": _human_date(plan.facts.date or "", today_date),
+                      "time": plan.facts.time or "", "time_label": _human_time(plan.facts.time or ""),
+                      "location": venue or plan.facts.location or "",
+                      "party_size": plan.facts.party_size,
+                      "needs": " and ".join(needs), "details": details})
+    plans.sort(key=lambda item: (item["date"] == "", item["date"]))
     actions = service.store.actions_for_chat(chat_id)
     counts = portal_store.analytics(chat_id)
-    analytics = {"Messages": counts["message_count"],
-                 "Shared media": counts["attachment_count"]}
     for sender in counts["by_member"]:
         name = labels.get(sender["sender_id"], sender["display_name"])
         labels[sender["sender_id"]] = name
-        analytics[f"{name} texts"] = sender["message_count"]
+    top_count = counts["by_member"][0]["message_count"] if counts["by_member"] else 0
+    member_stats = [{"name": labels.get(m["sender_id"], m["display_name"]),
+                     "count": m["message_count"],
+                     "pct": round(100 * m["message_count"] / top_count) if top_count else 0}
+                    for m in counts["by_member"]]
+    highlights = {"Total messages": counts["message_count"],
+                  "Shared media": counts["attachment_count"]}
     if counts["by_member"]:
-        analytics["Most texts"] = labels[counts["by_member"][0]["sender_id"]]
-        analytics["Fewest texts"] = labels[counts["by_member"][-1]["sender_id"]]
+        highlights["Most talkative"] = labels.get(counts["by_member"][0]["sender_id"], counts["by_member"][0]["display_name"])
+        highlights["Quietest"] = labels.get(counts["by_member"][-1]["sender_id"], counts["by_member"][-1]["display_name"])
     if counts["laughs_received"]:
         winner = counts["laughs_received"][0]
-        analytics["Funniest (by laughs)"] = labels.get(winner["sender_id"], winner["sender_id"])
-    else:
-        analytics["Funniest (by laughs)"] = "No laugh reactions yet"
+        highlights["Funniest"] = labels.get(winner["sender_id"], winner["sender_id"])
+    if counts["reactions_received"]:
+        winner = counts["reactions_received"][0]
+        highlights["Most reactions"] = labels.get(winner["sender_id"], winner["sender_id"])
+    if counts["busiest_day"]:
+        try:
+            day = datetime.strptime(counts["busiest_day"]["day"], "%Y-%m-%d")
+            highlights["Busiest day"] = day.strftime("%b %-d")
+        except ValueError:
+            pass
+    analytics = highlights
     historical_results = []
     historical_error = None
     if old_plan_query and group["sections"].get("plans", True) and group["sections"].get("history", True):
@@ -84,7 +145,7 @@ def build_portal_data(service, portal_store, group: dict, *, before: str | None 
         older_url = f"/{quote(group_id)}?before={quote(cursor, safe='')}"
     return {"title": group["title"] or "Group chat", "members": list(labels.values()),
             "theme": group["theme"], "messages": messages, "plans": plans,
-            "analytics": analytics, "actions": actions,
+            "analytics": analytics, "member_stats": member_stats, "actions": actions,
             "import_status": {"state": status["status"], "imported": status["imported_count"]},
             "settings": group["sections"], "historical_results": historical_results,
             "historical_query": old_plan_query, "historical_error": historical_error,

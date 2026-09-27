@@ -26,7 +26,7 @@ def _digest(directory: Path) -> str:
 
 
 def publish(settings: Settings, *, project: str = "rallyplans",
-            output_dir: str | Path = "data/portal_build") -> str:
+            output_dir: str | Path | None = None) -> str:
     """Rebuild and deploy only when every archive import completed and content changed."""
     if os.environ.get("RALLY_PORTAL_PUBLISH_APPROVED") != "1":
         raise RuntimeError("External publication has not been enabled")
@@ -35,9 +35,13 @@ def publish(settings: Settings, *, project: str = "rallyplans",
             portal_store.import_state(chat_id)["status"] != "complete"
             for chat_id in settings.allowed_chat_ids):
         return "waiting for complete history import"
-    output = Path(output_dir).resolve()
+    # Deploy from outside any git working tree: the Vercel CLI attaches ambient
+    # git metadata (commit author) from an ancestor .git, which this project's
+    # deployment protection then blocks since that author has no access there.
+    output = (Path(output_dir).resolve() if output_dir is not None
+              else Path.home() / ".rally" / "portal_build")
     export_portal(settings.database_path, settings.database_path.parent / "portal_media",
-                  settings.allowed_chat_ids, output)
+                  settings.allowed_chat_ids, output, owner_name=settings.owner_display_name)
     digest = _digest(output)
     marker = settings.database_path.parent / "portal_publish_hash"
     if marker.exists() and marker.read_text() == digest:
@@ -53,8 +57,11 @@ def publish(settings: Settings, *, project: str = "rallyplans",
         raise RuntimeError("Vercel did not return a deployment URL")
     new_url = match.group(0)
     if previous_url and previous_url != new_url:
-        subprocess.run(["vercel", "rm", previous_url, "--yes", "--no-color"],
-                       cwd=output, check=True, capture_output=True, text=True)
+        try:
+            subprocess.run(["vercel", "rm", previous_url, "--yes", "--no-color"],
+                           cwd=output, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError:
+            pass
     previous_url_file.write_text(new_url)
     marker.write_text(digest)
     return "published"

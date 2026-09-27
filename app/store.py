@@ -216,6 +216,9 @@ class Store:
         previous = self.get_plan(chat_id)
         if previous and previous.state in ("DONE", "ABANDONED"):
             previous = None
+        if (previous and previous.facts.activity and facts.activity and
+                previous.facts.activity.strip().casefold() != facts.activity.strip().casefold()):
+            previous = None
         payload = json.dumps(asdict(facts), sort_keys=True)
         def material(f: PlanFacts):
             return (f.goal, f.activity, tuple(f.participants), f.party_size,

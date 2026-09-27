@@ -1,6 +1,8 @@
 """Environment configuration and concrete Rally service wiring."""
 
+import logging
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
@@ -78,6 +80,7 @@ class Settings:
     browser_download_path: Path = Path("data/browser/downloads")
     browser_max_actions: int = 6
     browser_max_text_chars: int = 6000
+    owner_display_name: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -197,6 +200,7 @@ class Settings:
             browser_download_path=browser_download_path,
             browser_max_actions=browser_max_actions,
             browser_max_text_chars=browser_max_text_chars,
+            owner_display_name=source.get("RALLY_OWNER_DISPLAY_NAME", "").strip(),
         )
 
 
@@ -337,4 +341,32 @@ def build_service(settings: Settings) -> RallyService:
                         group_memory=GroupMemoryStore(settings.database_path),
                         group_turns=GroupTurnStore(settings.database_path),
                         react_fn=react, typing_fn=typing, defer_heavy_work=True,
-                        history_fn=history_fn)
+                        history_fn=history_fn,
+                        portal_publish_fn=_debounced_portal_publish(settings))
+
+
+_publish_lock = threading.Lock()
+
+
+def _debounced_portal_publish(settings: Settings):
+    """Fire a background portal publish right after a plan changes, skipping
+    if one is already running rather than piling up concurrent deploys."""
+    if not settings.portal_publish_approved:
+        return None
+
+    def trigger():
+        if not _publish_lock.acquire(blocking=False):
+            return
+
+        def run():
+            try:
+                from scripts.publish_portal import publish
+                publish(settings)
+            except Exception:
+                logging.getLogger(__name__).exception("Immediate portal publish failed")
+            finally:
+                _publish_lock.release()
+
+        threading.Thread(target=run, daemon=True, name="rally-portal-publish").start()
+
+    return trigger

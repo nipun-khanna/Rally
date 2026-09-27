@@ -57,45 +57,9 @@ class _Service:
         self.store = store
 
 
-def _search_script(group_id: str) -> str:
-    path = json.dumps(f"/{group_id}/history-index.json")
-    return f'''<script>
-(() => {{
-  const form = document.querySelector("form.old-plan-search");
-  if (!form) return;
-  form.addEventListener("submit", async (event) => {{
-    event.preventDefault();
-    const query = form.querySelector("input").value.trim().toLowerCase();
-    const box = document.getElementById("historical-results");
-    box.replaceChildren();
-    if (query.length < 3 || query.length > 200) {{ box.textContent = "Ask a question between 3 and 200 characters."; return; }}
-    try {{
-      const response = await fetch({path});
-      if (!response.ok) throw new Error("search index unavailable");
-      const messages = await response.json();
-      const skip = new Set(["what","were","the","our","old","past","plans","plan","show","find","from","about"]);
-      const terms = (query.match(/[a-z0-9']+/g) || []).filter(x => x.length > 2 && !skip.has(x));
-      const plan = /\\b(plan|dinner|lunch|brunch|meet|trip|movie|party|concert|reservation|book|going|tomorrow|weekend)\\b/i;
-      const found = messages.filter(m => plan.test(m.text) && (!terms.length || terms.some(t => m.text.toLowerCase().includes(t)))).slice(0,8);
-      const heading = document.createElement("h3"); heading.textContent = "Possible older plans"; box.append(heading);
-      if (!found.length) {{ const p = document.createElement("p"); p.textContent = "No matching older plan mentions found."; box.append(p); return; }}
-      const list = document.createElement("ul");
-      for (const m of found) {{
-        const item = document.createElement("li");
-        const strong = document.createElement("strong"); strong.textContent = "Possible plan · " + m.sent_at.slice(0,10); item.append(strong);
-        const detail = document.createElement("p"); detail.textContent = "This older message mentions a possible plan. Check the conversation for what the group agreed to."; item.append(detail);
-        const evidence = document.createElement("blockquote"); evidence.textContent = m.text; item.append(evidence);
-        list.append(item);
-      }}
-      box.append(list);
-    }} catch (_) {{ box.textContent = "Past plan search is unavailable right now."; }}
-  }});
-}})();
-</script>'''
-
-
 def export_portal(database_path: str | Path, media_root: str | Path,
-                  allowed_chat_ids: set[str] | frozenset[str], output_dir: str | Path) -> dict:
+                  allowed_chat_ids: set[str] | frozenset[str], output_dir: str | Path,
+                  owner_name: str = "") -> dict:
     output = Path(output_dir).resolve()
     if output.name != "portal_build":
         raise ValueError("Output directory must be named portal_build")
@@ -129,7 +93,7 @@ def export_portal(database_path: str | Path, media_root: str | Path,
         before = None
         page_number = 1
         while True:
-            data = build_portal_data(service, portal_store, group, before=before)
+            data = build_portal_data(service, portal_store, group, before=before, owner_name=owner_name)
             next_before = None
             if data["older_url"]:
                 next_before = parse_qs(urlsplit(data["older_url"]).query).get("before", [None])[0]
@@ -162,8 +126,6 @@ def export_portal(database_path: str | Path, media_root: str | Path,
                         if not inline:
                             attachment["mime"] = "application/octet-stream"
             html = render_portal(data)
-            if group["sections"].get("plans", True) and group["sections"].get("history", True):
-                html = html.replace("</body>", _search_script(group_id) + "</body>")
             filename = target / "index.html" if page_number == 1 else target / "history" / f"{page_number}.html"
             filename.parent.mkdir(exist_ok=True)
             filename.write_text(html, encoding="utf-8")
@@ -197,7 +159,8 @@ def main() -> None:
     settings = Settings.from_env()
     result = export_portal(settings.database_path,
                            settings.database_path.parent / "portal_media",
-                           settings.allowed_chat_ids, args.output)
+                           settings.allowed_chat_ids, args.output,
+                           owner_name=settings.owner_display_name)
     print(result)
 
 

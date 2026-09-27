@@ -37,7 +37,7 @@ def test_dashboard_reply_keeps_mixed_case_url_after_signature():
     outbound = add_rally_signature(reply)
     assert DASHBOARD_URL in outbound
     assert PUBLIC_ID in outbound
-    assert any(word in outbound for word in ("damn", "shit", "fuck", "ass"))
+    assert "group page" in outbound.lower()
 
 
 def test_add_rally_signature_still_lowercases_non_url_body():

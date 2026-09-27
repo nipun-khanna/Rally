@@ -71,9 +71,8 @@ def _casual_clock(value: str) -> str:
 def _savage_option_why(picked: str, facts, options) -> str:
     losers = [item for item in options if item.casefold() != picked.casefold()]
     loser = losers[0] if losers else "the other option"
-    place = facts.location if facts and facts.location else "this crew"
-    return (f"{picked}. {place} already named the lanes — {loser} is the timid-ass hedge, "
-            f"{picked} slaps harder. lock it and stop splitting the damn vote.")
+    return (f"{picked}. y'all already named both, and {picked} beats {loser} for this crew. "
+            f"let's just lock that in.")
 
 
 def _log_scheduled_failure(phase: str, exc: Exception):
@@ -101,7 +100,7 @@ class RallyService:
                  portal_handler=None, web_answer_fn=None, adaptive_handler=None,
                  availability_fn=None, time_zone: str = "America/New_York", reply_agent=None,
                  group_memory=None, group_turns=None, react_fn=None, typing_fn=None,
-                 defer_heavy_work: bool = False, history_fn=None):
+                 defer_heavy_work: bool = False, history_fn=None, portal_publish_fn=None):
         self.store = store
         self.agent = agent
         self.reply_agent = reply_agent or agent
@@ -122,6 +121,7 @@ class RallyService:
         self.typing_fn = typing_fn
         self.defer_heavy_work = defer_heavy_work
         self.history_fn = history_fn
+        self.portal_publish_fn = portal_publish_fn
         self._thread_hydrated: set[str] = set()
         self._chat_locks_guard = Lock()
         self._chat_locks = {}
@@ -333,6 +333,11 @@ class RallyService:
                     facts.activity, facts.goal, facts.date) != (
                     plan.facts.activity, plan.facts.goal, plan.facts.date):
                 self.store.save_plan(message.chat_id, facts, message.sent_at)
+                if self.portal_publish_fn:
+                    try:
+                        self.portal_publish_fn()
+                    except Exception as exc:
+                        _log_scheduled_failure("portal publish trigger", exc)
         learn_started = time.perf_counter()
         self._learn_from_chat(message, messages)
         self._log_latency("learn", learn_started)
@@ -770,13 +775,13 @@ class RallyService:
                 return self.adaptive_handler.answer(message), False
             except Exception as exc:
                 _log_scheduled_failure("adaptive answer", exc)
-                return "couldn't finish that shit. try me again in a minute.", False
+                return "couldn't finish that, try me again in a minute.", False
         if self.web_answer_fn and should_search_web(message.text):
             try:
                 return self.web_answer_fn(message.text, tone=group_tone(messages)), False
             except Exception as exc:
                 _log_scheduled_failure("web answer", exc)
-                return ("web search is dead right now so i can't verify shit. try later."), False
+                return ("web search is down right now so i can't verify that, try later."), False
         return None
 
     def _call_without_chat_lock(self, chat_id: str, fn):
@@ -848,17 +853,15 @@ class RallyService:
             if gist and gist.casefold() not in " ".join(parts).casefold():
                 parts.append(gist)
         if not parts:
-            return ("nothing's locked, you're just vibing in the damn void. "
-                    "spit the one call — time, place, or who — and i'll ride with it.")
+            return ("nothing's locked in yet — give me a time, place, or who and i'll run with it.")
         if facts and facts.location and not facts.time:
-            nxt = "lock a time"
+            nxt = "just need a time"
         elif facts and facts.time and not facts.location:
-            nxt = "pick a damn place"
+            nxt = "just need a place"
         else:
-            nxt = "pick one walking-distance spot"
-        return (f"locked-in chaos: {', '.join(parts)}. y'all are stalling like cowards — "
-                f"{nxt} or i'm calling this shit mid in the thread. "
-                "i still won't fake a damn restaurant.")
+            nxt = "pick a spot and we're set"
+        return (f"so far: {', '.join(parts)}. {nxt} — "
+                "and to be clear, i can't actually book anything yet.")
 
     def _proposal_context(self, plan) -> dict | None:
         if plan is None:
@@ -881,11 +884,11 @@ class RallyService:
 
     def _reply_forget(self, message: ChatMessage, target: str):
         if self.group_memory is None:
-            text = "i don't have shit saved for this group."
+            text = "i don't have anything saved for this group."
         elif target == "":
             removed = self.group_memory.forget(message.chat_id)
-            text = ("fine, i forgot that group crap."
-                    if removed else "i don't have shit saved for this group.")
+            text = ("okay, forgot it."
+                    if removed else "i don't have anything saved for this group.")
         else:
             removed = self.group_memory.forget(message.chat_id, target)
             if not removed:

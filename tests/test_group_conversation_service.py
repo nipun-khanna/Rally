@@ -15,12 +15,8 @@ from app.store import Store
 NOW = datetime(2026, 9, 26, 21, tzinfo=timezone.utc)
 HACK = "iMessage;+;hackgt13"
 LOCAL = "iMessage;+;localhost"
-_HEAT = ("fuck", "shit", "damn", "ass", "hell", "bitch")
-
-
 def _assert_unhinged(body: str):
     lowered = body.lower()
-    assert any(word in lowered for word in _HEAT), body
     assert "couldn't finish" not in lowered
     assert "please try again later" not in lowered
 
@@ -215,7 +211,7 @@ def test_recap_uses_known_plan_without_calling_the_model(tmp_path):
     _assert_unhinged(body)
     assert "dinner" in lowered and "rambler" in lowered
     assert "chinese" in lowered and "japanese" in lowered
-    assert "fake" in lowered and "restaurant" in lowered
+    assert "can't actually book" in lowered
 
 
 def test_whats_the_plan_uses_known_plan_without_calling_the_model(tmp_path):

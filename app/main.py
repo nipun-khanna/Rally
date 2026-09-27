@@ -61,7 +61,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
                voice_model: str | None = None, xai_api_key: str | None = None,
                voice_owner: str | None = None, browser_runtime=None,
                browser_inbound=None, browser_admin_token: str | None = None,
-               browser_enabled: bool = False) -> FastAPI:
+               browser_enabled: bool = False, owner_display_name: str = "") -> FastAPI:
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
@@ -72,6 +72,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
         tick_seconds = settings.tick_seconds
         app_url = app_url or settings.app_url
         history_enabled = settings.history_enabled
+        owner_display_name = settings.owner_display_name
         if history_enabled and settings.bluebubbles_url and settings.bluebubbles_password:
             history_client = BlueBubblesHistoryClient(settings.bluebubbles_url,
                                                        settings.bluebubbles_password)
@@ -181,7 +182,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
             ticks += 1
             await _run_scheduled_checks(relationship_service, service)
             await asyncio.to_thread(import_one_page)
-            if publish_enabled and ticks % max(1, 300 // tick_seconds) == 0:
+            if publish_enabled and ticks % max(1, 60 // tick_seconds) == 0:
                 try:
                     from scripts.publish_portal import publish
                     await asyncio.to_thread(publish, settings)
@@ -484,6 +485,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
         if group is None or group['chat_id'] in personal_chat_ids() or group["chat_id"] not in allowed_chats:
             raise HTTPException(404, "Group not found")
         return HTMLResponse(render_portal(build_portal_data(
-            service, portal_store, group, before=before, old_plan_query=old_plan_query)))
+            service, portal_store, group, before=before, old_plan_query=old_plan_query,
+            owner_name=owner_display_name)))
 
     return app

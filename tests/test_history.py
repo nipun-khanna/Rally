@@ -4,7 +4,9 @@ from urllib.error import URLError
 
 import pytest
 
-from app.history import BlueBubblesHistoryClient, HistoryFetchError, HistoryImporter, normalize_archive_message
+from app.history import (BlueBubblesHistoryClient, HistoryFetchError, HistoryImporter,
+                         format_phone_number, normalize_archive_message)
+from app.portal_store import PortalStore
 
 
 class Response(io.BytesIO):
@@ -124,6 +126,36 @@ def test_failed_page_preserves_cursor(tmp_path):
         HistoryImporter(Client(), store, tmp_path).import_page("chat")
     assert store.state["cursor"] == "10"
     assert store.state["status"] == "error"
+
+
+def test_format_phone_number_renders_us_numbers_readably():
+    assert format_phone_number("+16785991244") == "(678) 599-1244"
+    assert format_phone_number("6785991244") == "(678) 599-1244"
+    assert format_phone_number("not-a-phone@example.com") == "not-a-phone@example.com"
+
+
+def test_sync_member_labels_covers_silent_participants_and_sets_title(tmp_path):
+    class Client:
+        def fetch_contacts(self):
+            return [{"displayName": "Akhil Meda", "phoneNumbers": [{"address": "+15550001111"}]}]
+
+        def fetch_chat_metadata(self, chat_id):
+            return {"displayName": "Tester", "participants": [
+                {"address": "+15550001111"}, {"address": "+16785991244"}]}
+
+    store = PortalStore(tmp_path / "rally.sqlite3")
+    chat_id = "any;+;test"
+    store.ensure_group(chat_id)
+    store.upsert_messages(chat_id, [{"message_id": "m1", "sender_id": "local-imessage-account",
+                                     "text": "hi", "sent_at": "2026-09-26T00:00:00+00:00"}])
+    importer = HistoryImporter(Client(), store, tmp_path)
+    count = importer.sync_member_labels(chat_id)
+    members = {m["sender_id"]: m["display_name"] for m in store.members(chat_id)}
+    assert members["+15550001111"] == "Akhil Meda"
+    assert members["+16785991244"] == "(678) 599-1244"
+    assert "local-imessage-account" not in members
+    assert count == 2
+    assert store.group_for_chat(chat_id)["title"] == "Tester"
 
 
 def test_media_only_webhook_is_archived():

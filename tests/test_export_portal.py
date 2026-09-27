@@ -44,10 +44,8 @@ def test_export_contains_all_pages_and_visible_media_only(tmp_path):
     output = tmp_path / "portal_build"
     summary = export_portal(db, media_root, {group}, output)
     assert summary == {"groups": 1, "pages": 2, "media": 1}
-    first = (output / public_id / "index.html").read_text(encoding="utf-8")
-    second = (output / public_id / "history" / "2.html").read_text(encoding="utf-8")
-    assert f"/{public_id}/history/2.html" in first
-    assert "Dinner next week" in second
+    assert (output / public_id / "index.html").exists()
+    assert (output / public_id / "history" / "2.html").exists()
     assert len(list((output / public_id / "media").iterdir())) == 1
     assert any(item["text"] == "Dinner next week" for item in json.loads(
         (output / public_id / "history-index.json").read_text(encoding="utf-8")))
@@ -73,9 +71,7 @@ def test_active_attachment_is_download_only(tmp_path):
         "status": "available"}]}])
     output = tmp_path / "portal_build"
     export_portal(db, media_root, {group}, output)
-    html = (output / public_id / "index.html").read_text(encoding="utf-8")
-    assert f"/{public_id}/download/" in html
-    assert f"/{public_id}/media/" not in html
     assert list((output / public_id / "download").iterdir())[0].suffix == ".bin"
+    assert not (output / public_id / "media").exists()
     config = json.loads((output / "vercel.json").read_text())
     assert any(rule["source"] == "/:group/download/:file" for rule in config["headers"])

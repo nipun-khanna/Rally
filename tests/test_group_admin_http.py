@@ -147,7 +147,7 @@ def test_dashboard_command_texts_hosted_archive_not_local_admin(tmp_path):
     assert webhook(client, "dash-1", "Rally, send the dashboard", mine=True).status_code == 200
     assert sent[0][0] == GROUP
     assert f"https://rallyplans.vercel.app/{public_id}" in sent[0][1]
-    assert any(word in sent[0][1].lower() for word in ("damn", "shit", "fuck", "ass"))
+    assert "group page" in sent[0][1].lower()
     assert "admin-secret" not in sent[0][1]
     assert "127.0.0.1" not in sent[0][1]
     assert GROUP not in sent[0][1]
@@ -159,7 +159,7 @@ def test_admin_dashboard_phrase_keeps_vercel_link_and_no_token(tmp_path):
     assert webhook(client, "dash-2", "Rally, admin dashboard").status_code == 200
     assert sent[0][0] == GROUP
     assert f"https://rallyplans.vercel.app/{public_id}" in sent[0][1]
-    assert any(word in sent[0][1].lower() for word in ("damn", "shit", "fuck", "ass"))
+    assert "group page" in sent[0][1].lower()
     assert "Mac" in sent[0][1]
     assert "admin-secret" not in sent[0][1]
     assert "127.0.0.1" not in sent[0][1]
@@ -171,7 +171,7 @@ def test_page_link_is_unchanged_when_dashboard_commands_exist(tmp_path):
     public_id = portal.ensure_group(GROUP)
     assert sent[0][0] == GROUP
     assert f"https://rallyplans.vercel.app/{public_id}" in sent[0][1]
-    assert any(word in sent[0][1].lower() for word in ("damn", "shit", "fuck", "ass"))
+    assert "group page" in sent[0][1].lower()
 
 
 def test_dashboard_command_without_app_url_does_not_text_localhost(tmp_path):
@@ -188,7 +188,7 @@ def test_public_portal_stays_unauthenticated_and_lacks_admin_ops(tmp_path):
     rally.store.add_message(ChatMessage("m1", GROUP, "nick", "Dinner Friday?", NOW))
     page = client.get(f"/{public_id}")
     assert page.status_code == 200
-    assert "Dinner Friday?" in page.text or "Conversation" in page.text
+    assert "Group stats" in page.text
     assert "/admin/groups" not in page.text
     assert "unprocessed" not in page.text.lower()
     assert client.get("/admin/groups").status_code == 403
