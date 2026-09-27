@@ -688,6 +688,43 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get_proposal(proposal_id).status, "stale")
         self.assertIsNone(self.store.get_plan("chat1").pending_proposal_id)
 
+    def test_explicit_plan_cancel_updates_state_and_publishes_without_extraction(self):
+        published = []
+        self.service.portal_publish_fn = lambda: published.append("published")
+        self.agent.extract = lambda *_args: self.fail("explicit cancel must not wait for extraction")
+
+        self.assertTrue(self.service.receive(
+            ChatMessage("cancel-now", "chat1", "nick", "Rally, cancel the plan", NOW)))
+
+        plan = self.store.get_plan("chat1")
+        self.assertEqual(plan.state, "ABANDONED")
+        self.assertTrue(plan.facts.abandoned)
+        self.assertEqual(published, ["published"])
+        self.assertTrue(any("canceled the active plan" in text.lower() for _, text in self.sent))
+
+    def test_deferred_plan_extraction_batches_quick_messages_per_chat(self):
+        extracted = []
+
+        class BatchingAgent(FakeAgent):
+            def extract(self, messages, previous):
+                extracted.append([message.message_id for message in messages])
+                return PlanFacts()
+
+        service = RallyService(self.store, BatchingAgent(self.facts), lambda _: [],
+                               lambda *_args: None, defer_heavy_work=True)
+        first = ChatMessage("batch-1", "batch-chat", "nick", "first message", NOW)
+        second = ChatMessage("batch-2", "batch-chat", "sarah", "second message", NOW)
+        self.assertTrue(service.receive(first))
+        self.assertTrue(service.receive(second))
+
+        deadline = time.monotonic() + 3
+        while not (self.store.is_processed(first.message_id) and self.store.is_processed(second.message_id)) and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue(self.store.is_processed(first.message_id))
+        self.assertTrue(self.store.is_processed(second.message_id))
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(extracted[0][-2:], ["batch-1", "batch-2"])
+
 
 if __name__ == "__main__":
     unittest.main()

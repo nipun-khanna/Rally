@@ -38,7 +38,7 @@ RALLY_CAPABILITIES = """
 What Rally can do (allowlisted chats, after a Rally ping or during a 5-minute turn):
 - Recap the plan, flag conflicts, forget an exact fact when asked, and answer questions on this thread, including pre-join history.
 - Pick a restaurant when asked. A text reply cannot book a table by itself; the browser can walk a reservation until sign-in, then wait for a human. Never claim a booking is complete.
-- Share the public dashboard at rallyplans.vercel.app. Never send an admin token.
+- Share the hosted dashboard link from the configured archive URL. Never send an admin token.
 - Browse with the local browser or Browser Use: search, open public sites, fill public forms, and walk a reservation until sign-in.
 - Generate an image when asked to draw, add, or send a picture, and send that file as an iMessage attachment. Do not refuse ordinary image or "pen pics" requests.
 - Send a short generated video file when that API is available, or a real https YouTube/Vimeo watch URL that has been checked. Never invent a dead link.

@@ -186,6 +186,15 @@ def build_group_admin(service, chat_id: str, *, portal_store=None,
         except ValueError:
             memory = []
     diagnostics = service.store.pending_diagnostics(chat_id)
+    knowledge = {"available": service.knowledge_refresh_fn is not None,
+                 "fact_count": 0, "cursor": ""}
+    if service.knowledge_store is not None:
+        try:
+            knowledge["fact_count"] = len(service.knowledge_store.facts(chat_id))
+            cursor = service.knowledge_store.cursor(chat_id)
+            knowledge["cursor"] = cursor[1] if cursor else ""
+        except Exception:
+            knowledge = {"available": False, "fact_count": 0, "cursor": ""}
     identity_view = {
         "allowlisted": True,
         "chat_id": chat_id,
@@ -209,5 +218,6 @@ def build_group_admin(service, chat_id: str, *, portal_store=None,
                        for item in messages if item["reaction"]],
         },
         "processing": diagnostics,
+        "knowledge": knowledge,
         "outbound": service.store.actions_for_chat(chat_id, limit=40),
     }

@@ -77,7 +77,7 @@ def test_what_can_you_do_lists_real_tools(tmp_path):
     assert "browser" in body
     assert "dashboard" in body
     assert "reservation" in body
-    assert "rallyplans.vercel.app" in body
+    assert "admin token" in body
     assert "coward" not in body
     assert body == HELP_REPLY
 
