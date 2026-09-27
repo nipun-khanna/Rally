@@ -20,6 +20,7 @@ from app.bluebubbles import DeliveryUncertainError
 from app.group_memory import eligible_fact
 from app.group_safety import (forget_phrase, illegal_assistance_request,
                               parse_forget_command, refusal_text)
+from app.browser.agent import looks_like_browser_request
 from app.media import (
     image_prompt,
     looks_like_image_request,
@@ -152,7 +153,27 @@ _CONSTRAINT_LINE = re.compile(
     r"\b(isolat\w*|allergic|can't|cannot|won't make|running late)\b",
     re.I,
 )
+_HELP_ASK = re.compile(
+    r"\b(?:what can you (?:do|help with)|what do you do|"
+    r"what are you (?:able to do|good for)|"
+    r"(?:your )?(?:capabilities|commands))\b",
+    re.I,
+)
+_BARE_HELP = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|yo|ok|okay|ask)[,\s]+)?(?:@?rally\b[\s,:!\-]*)?"
+    r"(?:help(?:\s+me)?(?:\s+out)?)\s*[?.!]*\s*$",
+    re.I,
+)
 _NO_ANSWER = re.compile(r"^\s*no(?:\s+|_)answer\s*$", re.I)
+HELP_REPLY = (
+    "i recap the plan (including pre-join history), flag conflicts, forget a "
+    "fact if you ask, and answer questions on this thread. i can pick a "
+    "restaurant — i can't book a reservation over text alone. "
+    "public dashboard is rallyplans.vercel.app (never an admin token). i can "
+    "use the browser, search, and fill public forms. i can draw or send images, and "
+    "generate or send a real video. ping me and i stay in the convo for 5 min; "
+    "i'll nudge if y'all stall."
+)
 _REPEAT_TEMPLATE = re.compile(
     r"^(?:here's the plan|nothing locked yet)\b|still no spot",
     re.I,
@@ -202,6 +223,14 @@ def _linked_list_answer(text: str) -> str | None:
     return ("walk three pointers — prev, current, next. each step set current.next "
             "to prev, then slide prev and current forward. when current is none, "
             "prev is the new head. that's the iterative reverse.")
+
+
+def looks_like_help_request(text: str) -> bool:
+    if not text or looks_like_image_request(text) or looks_like_video_request(text):
+        return False
+    if looks_like_browser_request(text) or _can_recap_locally(text):
+        return False
+    return bool(_HELP_ASK.search(text) or _BARE_HELP.match(text))
 
 
 def _reservation_reply(request: str, snap=None, facts=None) -> str:
@@ -270,6 +299,8 @@ def _worth_replying(text: str) -> bool:
     if not text or not text.strip():
         return False
     if looks_like_image_request(text) or looks_like_video_request(text):
+        return True
+    if looks_like_help_request(text):
         return True
     if (_can_recap_locally(text) or _restaurant_intent(text) or _PICK_ASK.search(text)
             or _TONE_Q.search(text) or _SONG_LIST.search(text) or _WHO_MADE.search(text)
@@ -1448,6 +1479,10 @@ class RallyService:
 
     def _has_local_reply(self, message: ChatMessage, plan) -> bool:
         text = message.text or ""
+        if looks_like_help_request(text):
+            return True
+        if looks_like_browser_request(text) and not _can_recap_locally(text):
+            return False
         if _can_recap_locally(text):
             return True
         facts = plan.facts if plan else None
@@ -1466,6 +1501,8 @@ class RallyService:
 
     def _local_decision_reply(self, plan, messages, memory_context: str = "",
                              request: str = "") -> str:
+        if looks_like_help_request(request):
+            return HELP_REPLY
         facts = plan.facts if plan else None
         picked = _named_option_pick(request, facts)
         if picked:
