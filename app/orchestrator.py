@@ -248,11 +248,12 @@ def _reservation_reply(request: str, snap=None, facts=None) -> str:
         picked = facts.location
     if picked:
         name = str(picked).split(",")[0].strip()
-        return (f"{name} works — that's the spot. i'll collect the reservation "
-                "details and call them after you confirm in this chat. "
-                "nothing is booked yet.")
-    return ("pick a spot and i'll collect the reservation details, then call "
-            "them after you confirm in this chat. nothing is booked yet.")
+        return (f"{name} works — that's the spot. i can't book over text alone. "
+                "i'll collect the reservation details and call them after you confirm "
+                "in this chat. nothing is booked yet.")
+    return ("i can't book that over text. pick a spot and i'll collect the "
+            "reservation details, then call them after you confirm in this chat. "
+            "nothing is booked yet.")
 
 
 def _named_option_pick(request: str, facts) -> str | None:

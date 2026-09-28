@@ -74,6 +74,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
                browser_enabled: bool = False, reservation_call_inbound=None,
                reservation_registry=None) -> FastAPI:
     settings = None
+    owner_display_name = ""
     if service is None:
         from app.config import Settings, build_service
         settings = Settings.from_env()
