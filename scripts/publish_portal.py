@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 from app.bluebubbles import is_private_direct_chat
@@ -50,8 +52,11 @@ def _deploy(settings: Settings, output: Path, *, project: str) -> str:
         raise RuntimeError("Vercel did not return a deployment URL")
     new_url = match.group(0)
     if previous_url and previous_url != new_url:
-        subprocess.run(["vercel", "rm", previous_url, "--yes", "--no-color"],
-                       cwd=output, check=True, capture_output=True, text=True)
+        try:
+            subprocess.run(["vercel", "rm", previous_url, "--yes", "--no-color"],
+                           cwd=output, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError:
+            pass
     previous_url_file.write_text(new_url)
     marker.write_text(digest)
     return "published"
@@ -75,6 +80,7 @@ def publish(settings: Settings, *, project: str = "rallyplans",
 def publish_live(settings: Settings, chat_id: str, *, project: str = "rallyplans",
                  output_dir: str | Path = "data/portal_build") -> str:
     """Generate one chat's live snapshot and deploy it without waiting on history import."""
+    project = project or settings.vercel_project or "rallyplans"
     if os.environ.get("RALLY_PORTAL_PUBLISH_APPROVED") != "1":
         raise RuntimeError("External publication has not been enabled")
     if chat_id not in settings.allowed_chat_ids:

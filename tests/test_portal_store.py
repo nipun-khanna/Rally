@@ -53,6 +53,8 @@ def test_settings_archive_attachments_and_analytics(tmp_path):
             {"sender_id": "b", "display_name": "b", "message_count": 1},
         ],
         "laughs_received": [],
+        "reactions_received": [],
+        "busiest_day": {"day": "2020-01-02", "message_count": 1},
     }
     store.set_import_state(chat, cursor="2", status="running")
     assert store.import_state(chat)["imported_count"] == 2

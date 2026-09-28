@@ -42,9 +42,10 @@ def guid_was_truncated(key: str, current: str, file_value: str) -> bool:
         return False
     if not current:
         return True
-    if ";" not in current and ";" in file_value:
-        return True
-    return file_value.startswith(current) and current != file_value
+    # A caller may deliberately supply a simple ID (for example in a recovery
+    # command or test). Treat it as a truncated shell value only when it is
+    # actually the prefix of the richer value found in `.env`.
+    return ";" not in current and file_value.startswith(current) and current != file_value
 
 
 def merge_dotenv(environ: Mapping[str, str], file_values: Mapping[str, str]) -> dict[str, str]:

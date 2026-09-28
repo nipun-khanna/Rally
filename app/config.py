@@ -1,6 +1,9 @@
 """Environment configuration and concrete Rally service wiring."""
 
+import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
@@ -29,6 +32,7 @@ from app.adaptive.tools import build_default_registry
 from app.adaptive.generator import CapabilityDraft, CapabilityProposalGenerator
 from app.adaptive.proposals import CapabilityProposalStore
 from app.envfile import resolve_settings_env
+from app.dashboard_live import vercel_project_from_url
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,7 @@ class Settings:
     max_calendar_requests: int
     allowed_chat_ids: frozenset[str]
     app_url: str = ""
+    vercel_project: str = ""
     portal_publish_approved: bool = False
     history_enabled: bool = True
     grok_extraction_timeout: float = 60
@@ -202,6 +207,10 @@ class Settings:
             allowed_chat_ids=frozenset(chat.strip() for chat in
                 source.get("RALLY_ALLOWED_CHAT_GUIDS", "").split(",") if chat.strip()),
             app_url=source.get("RALLY_APP_URL", ""),
+            vercel_project=(
+                source.get("RALLY_VERCEL_PROJECT", "").strip()
+                or (vercel_project_from_url(source.get("RALLY_APP_URL", "")) or "")
+            ),
             portal_publish_approved=source.get("RALLY_PORTAL_PUBLISH_APPROVED", "0") == "1",
             history_enabled=source.get("RALLY_HISTORY_ENABLED", "1") == "1",
             grok_extraction_timeout=extraction_timeout,
@@ -438,6 +447,18 @@ def build_service(settings: Settings) -> RallyService:
                     messages.append(parsed)
             return messages
 
+    from app.knowledge import DebouncedKnowledgeRunner, KnowledgeBuilder, KnowledgeStore
+    from app.portal_store import PortalStore
+    publish_trigger = _debounced_portal_publish(settings)
+    knowledge_store = KnowledgeStore(settings.database_path)
+    knowledge_fn = None
+    knowledge_refresh_fn = None
+    if settings.history_enabled:
+        knowledge_builder = KnowledgeBuilder(knowledge_store, PortalStore(settings.database_path), agent,
+                                             owner_name=settings.owner_display_name)
+        knowledge_fn = DebouncedKnowledgeRunner(
+            knowledge_builder, on_change=publish_trigger, interval=10.0)
+        knowledge_refresh_fn = knowledge_builder.run
     return RallyService(store, agent, search, send, settings.stall_minutes,
                         extractor=extractor, calendar_fn=calendar_fn,
                         reply_agent=reply_agent,
@@ -453,4 +474,50 @@ def build_service(settings: Settings) -> RallyService:
                         video_link_fn=video_link_fn,
                         send_attachment_fn=send_file if (
                             settings.bluebubbles_url and settings.bluebubbles_password
-                        ) else None)
+                        ) else None,
+                        portal_publish_fn=publish_trigger,
+                        knowledge_fn=knowledge_fn, knowledge_store=knowledge_store,
+                        knowledge_refresh_fn=knowledge_refresh_fn)
+
+
+class CoalescingPortalPublisher:
+    """Serialize portal deployments without losing an update made mid-deploy."""
+
+    def __init__(self, publish_fn):
+        self.publish_fn = publish_fn
+        self._lock = threading.Lock()
+        self._running = False
+        self._dirty = False
+
+    def __call__(self):
+        with self._lock:
+            self._dirty = True
+            if self._running:
+                return
+            self._running = True
+        threading.Thread(target=self._run, daemon=True, name="rally-portal-publish").start()
+
+    def _run(self):
+        while True:
+            with self._lock:
+                self._dirty = False
+            try:
+                result = self.publish_fn()
+                if result == "already publishing":
+                    with self._lock:
+                        self._dirty = True
+                    time.sleep(1)
+            except Exception:
+                logging.getLogger(__name__).exception("Immediate portal publish failed")
+            with self._lock:
+                if not self._dirty:
+                    self._running = False
+                    return
+
+
+def _debounced_portal_publish(settings: Settings):
+    """Return a non-blocking publisher that coalesces, but never drops, changes."""
+    if not settings.portal_publish_approved:
+        return None
+    from scripts.publish_portal import publish
+    return CoalescingPortalPublisher(lambda: publish(settings))

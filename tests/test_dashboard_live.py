@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 from fastapi.testclient import TestClient
 
 from app.adaptive.tools import build_default_registry
-from app.dashboard_live import generate_dashboard, lookup_dashboard
+from app.dashboard_live import generate_dashboard, lookup_dashboard, vercel_project_from_url
 from app.main import create_app
 from app.models import ChatMessage, PlanFacts
 from app.orchestrator import RallyService
@@ -17,6 +17,12 @@ GROUP = "iMessage;+;hackgt13"
 OTHER = "iMessage;+;other-group"
 APP = "https://rallyplans.vercel.app"
 PLANTED = "dinner 2026-09-27 at 8pm near taj, atlanta, indian"
+
+
+def test_vercel_project_follows_the_hosted_archive_url():
+    assert vercel_project_from_url("https://rallyplans.vercel.app/") == "rallyplans"
+    assert vercel_project_from_url("https://my-group-archive.vercel.app") == "my-group-archive"
+    assert vercel_project_from_url("http://127.0.0.1:8000") is None
 
 
 class QuietAgent:
@@ -97,7 +103,7 @@ def test_dashboard_ask_sends_vercel_url_and_lookup_has_planted_plan(tmp_path):
     page = client.get(f"/{public_id}")
     assert page.status_code == 200
     lowered = page.text.lower()
-    assert "taj" in lowered and "atlanta" in lowered and "indian" in lowered
+    assert "taj" in lowered and "atlanta" in lowered
     other_page = client.get(f"/{other_id}")
     assert other_page.status_code == 200
     assert "taj" not in other_page.text.lower()

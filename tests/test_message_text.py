@@ -38,7 +38,7 @@ def test_dashboard_reply_keeps_mixed_case_url_after_signature():
     outbound = add_rally_signature(reply)
     assert DASHBOARD_URL in outbound
     assert PUBLIC_ID in outbound
-    assert "page" in outbound.lower()
+    assert "group page" in outbound.lower()
 
 
 def test_add_rally_signature_keeps_case_and_confirmation_codes():

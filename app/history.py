@@ -21,6 +21,16 @@ class HistoryFetchError(RuntimeError):
     """A history request failed; safe to show without exposing credentials."""
 
 
+def format_phone_number(address: str) -> str:
+    """Render a US phone number readably; pass through anything else unchanged."""
+    digits = re.sub(r"\D", "", address)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return address
+
+
 def normalize_archive_message(item: dict[str, Any], chat_id: str) -> dict[str, Any] | None:
     """Normalize a BlueBubbles message, including messages containing only media."""
     guid = item.get("guid")
@@ -148,6 +158,24 @@ class BlueBubblesHistoryClient:
             raise HistoryFetchError("BlueBubbles returned an invalid chat list")
         return [item for item in body["data"] if isinstance(item, dict)]
 
+    def fetch_chat_metadata(self, chat_id: str) -> dict[str, Any] | None:
+        """Return {'displayName', 'participants'} for one chat, or None if not found."""
+        url = self._url("/api/v1/chat/query")
+        body_bytes = json.dumps({"limit": 1000, "with": ["participants"]}).encode()
+        request = Request(url, data=body_bytes, method="POST",
+                          headers={"Content-Type": "application/json"})
+        try:
+            with self._opener(request, timeout=30) as response:
+                body = json.load(response)
+        except (HTTPError, URLError, OSError, UnicodeError, json.JSONDecodeError):
+            raise HistoryFetchError("BlueBubbles chat metadata request failed") from None
+        if not isinstance(body, dict) or body.get("status") != 200 or not isinstance(body.get("data"), list):
+            raise HistoryFetchError("BlueBubbles returned invalid chat metadata")
+        for item in body["data"]:
+            if isinstance(item, dict) and item.get("guid") == chat_id:
+                return item
+        return None
+
     def fetch_contacts(self) -> list[dict[str, Any]]:
         try:
             with self._opener(Request(self._url("/api/v1/contact")), timeout=30) as response:
@@ -179,7 +207,12 @@ class HistoryImporter:
             next_offset = offset + len(source)
             self.store.set_import_state(chat_id, cursor=str(next_offset),
                                         status="complete" if len(source) < limit else "pending")
-            if len(source) < limit and hasattr(self.client, "fetch_contacts"):
+            # Contacts can change without any message history changing. Refresh at
+            # the beginning of a scan (and when it finishes) so a renamed contact
+            # replaces the cached portal label on the next scheduled or manual
+            # archive refresh. Avoid doing the extra contacts lookup for every
+            # middle page of a large backfill.
+            if (offset == 0 or len(source) < limit) and hasattr(self.client, "fetch_contacts"):
                 try:
                     self.sync_member_labels(chat_id)
                 except HistoryFetchError:
@@ -204,7 +237,9 @@ class HistoryImporter:
         return total
 
     def sync_member_labels(self, chat_id: str) -> int:
-        """Resolve only senders in this group's archive against local contacts."""
+        """Resolve every group participant (not just senders) against local contacts,
+        register a member row for each so the portal never falls back to a raw address,
+        and pick up the group's real display name from BlueBubbles if none is set yet."""
         contacts = self.client.fetch_contacts()
         addresses = {}
         for contact in contacts:
@@ -219,14 +254,32 @@ class HistoryImporter:
                         digits = re.sub(r"\D", "", address)
                         if len(digits) >= 10:
                             addresses[digits[-10:]] = name.strip()
-        count = 0
-        for member in self.store.analytics(chat_id)["by_member"]:
-            sender = member["sender_id"]
+
+        def resolve(sender: str) -> str:
             digits = re.sub(r"\D", "", sender)
             name = addresses.get(sender.lower()) or (addresses.get(digits[-10:]) if len(digits) >= 10 else None)
-            if name:
-                self.store.set_member(chat_id, sender, name)
-                count += 1
+            return name or format_phone_number(sender)
+
+        senders = {member["sender_id"] for member in self.store.analytics(chat_id)["by_member"]}
+        try:
+            meta = self.client.fetch_chat_metadata(chat_id)
+        except HistoryFetchError:
+            meta = None
+        if meta:
+            for participant in meta.get("participants") or []:
+                address = participant.get("address") if isinstance(participant, dict) else None
+                if isinstance(address, str) and address:
+                    senders.add(address)
+            display_name = meta.get("displayName")
+            group = self.store.group_for_chat(chat_id)
+            if isinstance(display_name, str) and display_name.strip() and group and not group.get("title"):
+                self.store.update_settings(chat_id, title=display_name.strip())
+        count = 0
+        for sender in senders:
+            if sender == "local-imessage-account":
+                continue
+            self.store.set_member(chat_id, sender, resolve(sender))
+            count += 1
         return count
 
     def hydrate_pending_media(self, chat_id: str, page_size: int = 500) -> int:

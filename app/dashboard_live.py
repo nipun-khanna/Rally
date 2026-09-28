@@ -12,6 +12,20 @@ from urllib.parse import urlsplit
 from app.portal_data import build_portal_data
 
 
+def vercel_project_from_url(app_url: str | None) -> str | None:
+    """Vercel CLI project name is the first label of *.vercel.app."""
+    if not isinstance(app_url, str) or not app_url.strip():
+        return None
+    host = (urlsplit(app_url.strip()).hostname or "").casefold()
+    suffix = ".vercel.app"
+    if not host.endswith(suffix):
+        return None
+    name = host[: -len(suffix)]
+    if not name or "." in name:
+        return None
+    return name
+
+
 def _hosted_origin(app_url: str | None) -> str:
     if not isinstance(app_url, str) or not app_url.strip():
         raise ValueError("Hosted archive URL is required")

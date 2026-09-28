@@ -75,6 +75,10 @@ def _css() -> str:
   .groups strong { font-family:"Iowan Old Style","Palatino Linotype",Palatino,serif;
                    font-size:1.2rem; }
   .wait { color:var(--amber); font-weight:650; }
+  .action { appearance:none; border:0; border-radius:8px; background:var(--teal); color:#fff;
+            padding:.58rem .82rem; font:inherit; cursor:pointer; }
+  .action:disabled { opacity:.65; cursor:wait; }
+  .action-note { color:var(--mute); margin:.7rem 0 0; }
   @media (max-width: 640px) {
     main { width:calc(100% - 1rem); }
     .groups a { grid-template-columns:1fr; gap:.2rem; }
@@ -201,6 +205,21 @@ def render_group_admin(data: dict) -> str:
     else:
         memory_block = "<p class='empty'>No group memory facts stored.</p>"
 
+    knowledge = data.get("knowledge") or {}
+    refresh_url = "/admin/groups/" + quote(str(data.get("chat_id") or ""), safe="") + "/knowledge/refresh"
+    if knowledge.get("available"):
+        notice = (f"<p class='action-note' role='status'>{_t(knowledge['notice'])}</p>"
+                  if knowledge.get("notice") else "")
+        knowledge_block = (
+            f"<p>{_t(knowledge.get('fact_count') or 0)} saved knowledge facts.</p>"
+            "<p class='action-note'>Refresh imports newly arrived archive messages, then processes only "
+            "messages newer than the KB cursor.</p>"
+            f"<form method='post' action='{_t(refresh_url)}'><button class='action' type='submit' "
+            "id='knowledge-refresh'>Refresh knowledge</button></form>" + notice
+        )
+    else:
+        knowledge_block = "<p class='empty'>Knowledge refresh is unavailable until history and KB setup are enabled.</p>"
+
     turn = data.get("turn") or {}
     if turn.get("available"):
         turn_block = "<dl>" + _rows([
@@ -258,7 +277,7 @@ def render_group_admin(data: dict) -> str:
   {alert}
   <nav class="jump" aria-label="Group operations">
     <a href="#messages">Messages</a><a href="#plan">Plan</a><a href="#proposal">Proposal</a>
-    <a href="#memory">Memory</a><a href="#turn">Turn</a><a href="#replies">Replies</a>
+    <a href="#memory">Memory</a><a href="#knowledge">Knowledge</a><a href="#turn">Turn</a><a href="#replies">Replies</a>
     <a href="#processing">Processing</a><a href="#identity">Identity</a>
   </nav>
   <div class="stack">
@@ -266,6 +285,7 @@ def render_group_admin(data: dict) -> str:
     <section id="plan"><h2>Plan</h2>{plan_block}</section>
     <section id="proposal"><h2>Proposal</h2>{''.join(proposal_parts)}</section>
     <section id="memory"><h2>Group memory</h2>{memory_block}</section>
+    <section id="knowledge"><h2>Knowledge base</h2>{knowledge_block}</section>
     <section id="turn"><h2>Turn</h2>{turn_block}</section>
     <section id="replies"><h2>Replies</h2>{outbound_block}</section>
     <section id="processing" class="{'issue' if pending else ''}">
