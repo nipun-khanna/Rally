@@ -32,6 +32,13 @@ from app.voice.session import (
 logger = logging.getLogger(__name__)
 
 
+def chat_is_group_portal(chat_id: str, allowed: set | frozenset, excluded: set) -> bool:
+    """True for an allowlisted group that is not a direct chat or private source."""
+    from app.bluebubbles import is_private_direct_chat
+    return (isinstance(chat_id, str) and bool(chat_id) and chat_id in allowed
+            and chat_id not in excluded and not is_private_direct_chat(chat_id))
+
+
 def _log_failure(phase: str, exc: Exception):
     if isinstance(exc, GrokProviderError):
         logger.warning("%s failed: stage=%s kind=%s status=%s",
@@ -134,25 +141,40 @@ def create_app(service=None, *, webhook_token: str | None = None,
                 allowed_chat_ids=settings.allowed_chat_ids,
                 group_turns=service.group_turns)
         from app.voice.caller import ReservationCaller
+        from app.voice.call_store import CallAttemptStore
         from app.voice.continuity import ContinuityDialer
         from app.voice.handler import ReservationCallInbound
         from app.voice.reservation_tools import build_reservation_call_tools
         from app.voice.telco import TwilioDialer
+        from app.voice.vapi import VapiDialer
+        from app.voice.contacts import LocalContactLookup
+        from app.browser.agent import PublicRestaurantLookup, page_for_venue
         dialer = TwilioDialer(settings.twilio_account_sid, settings.twilio_auth_token,
                               settings.twilio_from_number)
+        vapi = VapiDialer(settings.vapi_api_key, settings.vapi_assistant_id,
+                          settings.vapi_phone_number_id)
         continuity = (
             ContinuityDialer(method="phone", methods=("phone",))
             if settings.continuity_dial else None)
+        browser_reader = None
+        if browser_runtime is not None:
+            def browser_reader(venue, runtime=browser_runtime):
+                return page_for_venue(runtime, venue)
+        phone_lookup = PublicRestaurantLookup(browser_reader=browser_reader)
+        contact_client = BlueBubblesHistoryClient(settings.bluebubbles_url, settings.bluebubbles_password)
         reservation_caller = ReservationCaller(
             plan_store=service.store, dialer=dialer if dialer.ready() else None,
             app_url=settings.app_url, callback_number=settings.callback_number,
-            guest_name="" if settings.voice_owner == "local-imessage-account"
-            else settings.voice_owner,
-            continuity=continuity)
+            guest_name="",
+            owner_name="",
+            phone_lookup=phone_lookup.find,
+            continuity=continuity, vapi=vapi,
+            contact_lookup=LocalContactLookup(contact_client.fetch_contacts))
         reservation_call_inbound = ReservationCallInbound(
             reservation_caller, service.send_fn,
             allowed_chat_ids=settings.allowed_chat_ids,
-            group_turns=service.group_turns)
+            group_turns=service.group_turns,
+            call_store=CallAttemptStore(service.store.path))
         reservation_registry = build_reservation_call_tools(reservation_caller)
         if settings.xai_api_key:
             from app.voice.bridge import LocalGrokVoice
@@ -229,7 +251,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
         if importer is None:
             return
         for chat_id in allowed_chats:
-            if chat_id in personal_chat_ids():
+            if not chat_is_group_portal(chat_id, allowed_chats, personal_chat_ids()):
                 continue
             portal_store.ensure_group(chat_id)
             state = portal_store.import_state(chat_id)
@@ -259,6 +281,13 @@ def create_app(service=None, *, webhook_token: str | None = None,
             await asyncio.sleep(tick_seconds)
             ticks += 1
             await _run_scheduled_checks(relationship_service, service)
+            if reservation_call_inbound is not None:
+                try:
+                    completed = await asyncio.to_thread(reservation_call_inbound.reconcile_calls)
+                    if completed:
+                        await asyncio.to_thread(service.deliver_pending)
+                except Exception as exc:
+                    _log_failure("Vapi call reconciliation", exc)
             await asyncio.to_thread(import_one_page)
             if publish_enabled and ticks % max(1, 300 // tick_seconds) == 0:
                 try:
@@ -344,9 +373,36 @@ def create_app(service=None, *, webhook_token: str | None = None,
         authorize_browser_admin(request, x_rally_admin_token)
         return browser_runtime.stop()
 
+    def archive_allowed_group_message(payload: dict) -> None:
+        """Record one allowlisted group message before a handler returns early.
+
+        Upsert is keyed by chat and message id, and each id is written once per
+        request, so a restaurant or browser turn cannot archive the same row twice.
+        """
+        if not history_enabled or payload.get("type") != "new-message":
+            return
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return
+        written: set[tuple[str, str]] = set()
+        for chat in data.get("chats") or []:
+            chat_id = chat.get("guid") if isinstance(chat, dict) else None
+            if not chat_is_group_portal(chat_id, allowed_chats, personal_chat_ids()):
+                continue
+            archived = normalize_archive_message(data, chat_id)
+            if not archived:
+                continue
+            key = (chat_id, archived["message_id"])
+            if key in written:
+                continue
+            written.add(key)
+            portal_store.ensure_group(chat_id)
+            portal_store.upsert_messages(chat_id, [archived])
+
     @app.post("/webhooks/bluebubbles")
     def webhook(payload: dict, token: str | None = None):
         authorize(token)
+        archive_allowed_group_message(payload)
         if reservation_call_inbound is not None:
             handled_call = reservation_call_inbound.try_receive(payload)
             if handled_call is not None:
@@ -373,15 +429,6 @@ def create_app(service=None, *, webhook_token: str | None = None,
                                               for c in data.get('chats') or []):
                 # Selected conversations are private learning sources, not LLM planning input.
                 return {'accepted': payload.get('type') in ('new-message', 'updated-message', 'message-updated')}
-        data = payload.get("data")
-        if history_enabled and payload.get("type") == "new-message" and isinstance(data, dict):
-            for chat in data.get("chats") or []:
-                chat_id = chat.get("guid") if isinstance(chat, dict) else None
-                if chat_id and chat_id in allowed_chats:
-                    archived = normalize_archive_message(data, chat_id)
-                    if archived:
-                        portal_store.ensure_group(chat_id)
-                        portal_store.upsert_messages(chat_id, [archived])
         incoming = normalize_webhook(payload, allowed_direct_chat_ids=allowed_chats)
         if incoming is None:
             return {"accepted": False}
@@ -592,7 +639,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.post("/portal/admin/{chat_id}/import")
     def import_history(chat_id: str, token: str | None = None):
         authorize(token)
-        if chat_id not in allowed_chats or chat_id in personal_chat_ids() or importer is None:
+        if not chat_is_group_portal(chat_id, allowed_chats, personal_chat_ids()) or importer is None:
             raise HTTPException(404, "History import unavailable")
         return {"imported": importer.import_page(chat_id),
                 "state": portal_store.import_state(chat_id)}
@@ -600,7 +647,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.post("/portal/admin/{chat_id}/settings")
     def update_portal_settings(chat_id: str, updates: dict, token: str | None = None):
         authorize(token)
-        if chat_id not in allowed_chats or chat_id in personal_chat_ids():
+        if not chat_is_group_portal(chat_id, allowed_chats, personal_chat_ids()):
             raise HTTPException(404, "Group not found")
         try:
             return portal_store.update_settings(chat_id, title=updates.get("title"),
@@ -612,7 +659,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     @app.get("/{group_id}/media/{attachment_id}")
     def portal_media(group_id: str, attachment_id: str):
         group = portal_store.get_group(group_id)
-        if group is None or group['chat_id'] in personal_chat_ids() or group["chat_id"] not in allowed_chats or not group["sections"].get("history", True) or not group["sections"].get("media", True):
+        if group is None or not chat_is_group_portal(group["chat_id"], allowed_chats, personal_chat_ids()) or not group["sections"].get("history", True) or not group["sections"].get("media", True):
             raise HTTPException(404, "Media not found")
         item = portal_store.get_attachment(group["chat_id"], attachment_id)
         if not item or item["status"] != "available" or not item["local_path"]:
@@ -627,7 +674,7 @@ def create_app(service=None, *, webhook_token: str | None = None,
     def portal(group_id: str, before: str | None = None,
                old_plan_query: str | None = None):
         group = portal_store.get_group(group_id)
-        if group is None or group['chat_id'] in personal_chat_ids() or group["chat_id"] not in allowed_chats:
+        if group is None or not chat_is_group_portal(group["chat_id"], allowed_chats, personal_chat_ids()):
             raise HTTPException(404, "Group not found")
         return HTMLResponse(render_portal(build_portal_data(
             service, portal_store, group, before=before, old_plan_query=old_plan_query)))

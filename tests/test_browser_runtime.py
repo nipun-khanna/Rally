@@ -167,6 +167,31 @@ def test_runtime_navigates_and_isolates_chats(tmp_path):
     assert driver.proxy_url == "socks5://127.0.0.1:1"
 
 
+def test_logged_out_session_reads_a_page_without_owner_cookies(tmp_path):
+    driver = ScriptedDriver()
+    runtime = BrowserRuntime(tmp_path / "profile", tmp_path / "downloads",
+                             None, 6000, driver=driver, resolver=public_resolver)
+    runtime.start()
+    owner = runtime.act(
+        chat_id="iMessage;-;owner", authenticated=True,
+        action={"action": "navigate", "url": "https://news.example.com/account"})
+    public = runtime.act(
+        chat_id="restaurant-lookup", authenticated=False,
+        action={"action": "navigate", "url": "https://news.example.com/article"})
+    assert owner["status"] == "ok"
+    assert public["status"] == "ok"
+    assert driver.storage_state("iMessage;-;owner")["cookies"] == [
+        {"session": "owner-cookie-value"}]
+    assert driver.storage_state("restaurant-lookup")["cookies"] == []
+    seen = runtime.observe(chat_id="restaurant-lookup", authenticated=False)
+    assert seen.url == "https://news.example.com/article"
+    assert "weekend weather" in seen.text
+    assert "owner-cookie-value" not in seen.text
+    owner_page = runtime.observe(chat_id="iMessage;-;owner", authenticated=True)
+    assert owner_page.url == "https://news.example.com/account"
+    runtime.stop()
+
+
 def test_runtime_recover_recreates_a_dead_session(tmp_path):
     driver = ScriptedDriver()
     runtime = BrowserRuntime(tmp_path / "profile", tmp_path / "downloads",

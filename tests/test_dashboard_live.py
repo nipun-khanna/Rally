@@ -132,6 +132,18 @@ def test_generate_dashboard_tool_is_chat_scoped_and_findable(tmp_path):
     assert "taj" in blob and "atlanta" in blob and "indian" in blob
 
 
+def test_live_sync_does_not_replace_member_display_names(tmp_path):
+    path = tmp_path / "rally.sqlite3"
+    store = Store(path)
+    portal = PortalStore(path)
+    portal.ensure_group(GROUP)
+    portal.set_member(GROUP, "nick", "Nick")
+    store.add_message(ChatMessage("planted", GROUP, "nick", PLANTED, NOW))
+    generate_dashboard(store, portal, GROUP, app_url=APP, allowed_chat_ids={GROUP})
+    names = {member["sender_id"]: member["display_name"] for member in portal.members(GROUP)}
+    assert names["nick"] == "Nick"
+
+
 def test_hyphenated_mixed_case_public_id_lookup_stays_exact(tmp_path):
     path = tmp_path / "rally.sqlite3"
     store = Store(path)

@@ -50,7 +50,7 @@ def test_reservation_call_intent_routes_and_ignores_other_asks():
     assert looks_like_direct_call_request("Rally, dial +1 703-200-4231")
     assert not looks_like_direct_call_request("Hey Rally, remind me to call mom")
     assert not looks_like_direct_call_request("Hey Rally, call Taj and book for 4")
-    assert not looks_like_direct_call_request("Hey Rally, call 2125550100")
+    assert looks_like_direct_call_request("Hey Rally, call 2125550100")
 
 
 def test_parse_pulls_venue_party_time_and_never_invents_a_phone():
@@ -149,8 +149,8 @@ def test_chat_command_sends_status_and_does_not_claim_booked(tmp_path):
     assert sent
     assert sent[0][0] == GROUP
     body = sent[0][1].lower()
-    assert body.startswith("rally:")
-    assert "nothing is booked" in body
+    assert not body.startswith("rally:")
+    assert "will not place a call" in body
     assert "you're all set" not in body
     assert "4111" not in body
 
@@ -167,7 +167,7 @@ def test_active_turn_can_request_a_call_without_saying_rally(tmp_path):
     assert inbound.try_receive(payload(
         GROUP, "call Taj and book for 4 at 8", ident="follow")) is True
     assert sent
-    assert "nothing is booked" in sent[0][1].lower()
+    assert "will not place a call" in sent[0][1].lower()
 
 
 def test_continuity_fallback_dials_allowlisted_number_and_does_not_book():
@@ -230,7 +230,7 @@ def test_chat_command_continuity_call_does_not_claim_booked(tmp_path):
         GROUP, "Hey Rally, call 7032004231", ident="c1")) is True
     assert opened == [f"tel://{AUTHORIZED_TEST_NUMBER}"]
     body = sent[0][1].lower()
-    assert body.startswith("rally:")
+    assert not body.startswith("rally:")
     assert "phone" in body
     assert "nothing is booked" in body
 
@@ -258,3 +258,49 @@ def test_unallowlisted_chat_is_ignored():
     assert inbound.try_receive(payload(
         "iMessage;+;other", "Hey Rally, call Taj and book for 4 at 8")) is None
     assert sent == []
+
+
+def test_vapi_direct_request_routes_to_explicit_destination():
+    from app.voice.vapi import AUTHORIZED_TEST_NUMBER as VAPI_TEST_NUMBER
+    assert VAPI_TEST_NUMBER == "+16785991244"
+    assert looks_like_direct_call_request("Rally, call 6785991244")
+    assert looks_like_direct_call_request("Rally, call 2125550100")
+    calls = []
+
+    class Vapi:
+        def ready(self):
+            return True
+        def allows(self, number):
+            return number == VAPI_TEST_NUMBER
+        def place_call(self, *, to_number):
+            calls.append(to_number)
+            return {"id": "vapi-test-id", "status": "queued"}
+
+    caller = ReservationCaller(vapi=Vapi())
+    result = caller.run("Rally, call 6785991244")
+    assert calls == [VAPI_TEST_NUMBER]
+    assert result.transport == "vapi"
+    assert result.dialed is True
+    assert result.status == "need_confirm"
+    status = format_call_status(result).lower()
+    assert "call started" in status
+    assert "vapi-test-id" not in status
+    assert "queued" not in status
+    caller.run("Rally, call 2125550100")
+    assert calls == [VAPI_TEST_NUMBER]
+
+
+def test_vapi_unexpected_error_does_not_expose_provider_details():
+    class Vapi:
+        def ready(self):
+            return True
+
+        def place_call(self, *, to_number):
+            raise RuntimeError("private-key provider response")
+
+    result = ReservationCaller(vapi=Vapi()).run("Rally, call 6785991244")
+    assert not result.dialed
+    assert result.transport == "vapi"
+    assert "private-key" not in format_call_status(result)
+    assert "check the dashboard" in format_call_status(result)
+    assert "call not confirmed" in format_call_status(result).lower()

@@ -348,8 +348,9 @@ def test_non_recap_timeout_names_a_restaurant(tmp_path):
     body = sent[-1][1]
     _assert_not_mean(body)
     assert "rambler" in body.lower()
-    assert any(token in body.lower() for token in ("table", "green", "italian"))
-    assert "not a booking" in body.lower()
+    assert "cuisine" in body.lower()
+    assert "an italian table" not in body.lower()
+    assert "green table" not in body.lower()
 
 
 def test_timeout_without_plan_answers_without_a_recap_dump(tmp_path):

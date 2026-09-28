@@ -77,9 +77,9 @@ def test_crash_and_blocked_download_return_specific_status(tmp_path):
 
 def test_relationship_and_group_text_never_look_like_silent_browser_work():
     assert looks_like_browser_request("Open https://news.example.com/article")
-    assert looks_like_browser_request("Hey Rally, check the airline site")
-    assert looks_like_browser_request("Hey Rally, search for italian in midtown")
-    assert looks_like_browser_request("Hey Rally, reserve a table at Carbone")
+    assert looks_like_browser_request("Hey Rally, open the airline site")
+    assert not looks_like_browser_request("Hey Rally, search for italian in midtown")
+    assert not looks_like_browser_request("Hey Rally, reserve a table at Carbone")
     assert not looks_like_browser_request("Hey Rally, remind me to call mom")
     assert not looks_like_browser_request("dinner Friday in Midtown")
     assert not looks_like_browser_request("forget that I live in Atlanta")

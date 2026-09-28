@@ -12,7 +12,7 @@ A relevant message can still get no text if there is nothing useful to add. Rapi
 
 Duplicate webhooks reuse the same message ID, so they produce at most one reply and one reaction. Restarts do not treat old messages as new requests.
 
-Portal, adaptive tools, web lookup, booking approval, and availability handling keep their existing priority. Outbound texts still use the temporary `Rally:` prefix and lowercase body.
+Portal, adaptive tools, web lookup, booking approval, and availability handling keep their existing priority. Outbound texts use a lowercase body and no `Rally:` prefix. Bot echoes are still ignored.
 
 ## Memory and forgetting
 

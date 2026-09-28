@@ -648,6 +648,7 @@ class BrowserRuntime:
                                     else self._context.new_page())
                 self._owner_page.on("popup", lambda page: page.close())
             return self._owner_page
+        # Logged-out session: a new context, not a rejection and not the owner profile.
         if chat_id not in self._ephemeral:
             if self._browser is None:
                 logger.debug("launch chromium headed=%s headless=%s %s thread=%s",

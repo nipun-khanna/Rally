@@ -252,7 +252,8 @@ class ConfigTests(unittest.TestCase):
                 service.send_fn("any;+;chat1", "got it", selected_message_guid="inbound-1")
             self.assertEqual(send.call_args.args[2], "any;+;chat1")
             self.assertEqual(send.call_args.kwargs.get("selected_message_guid"), "inbound-1")
-            self.assertTrue(send.call_args.args[3].startswith("Rally: "))
+            self.assertEqual(send.call_args.args[3], "got it")
+            self.assertFalse(send.call_args.args[3].startswith("Rally:"))
             unsupported = ReactionResult("unsupported", "BlueBubbles Private API helper is not connected")
             with patch("app.config.helper_status", return_value=unsupported), \
                     patch("app.config.send_message") as send:
@@ -288,3 +289,18 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_vapi_configuration_is_optional_and_loaded_from_env():
+    empty = Settings.from_env({})
+    assert empty.vapi_api_key == ""
+    assert empty.vapi_assistant_id == ""
+    assert empty.vapi_phone_number_id == ""
+    configured = Settings.from_env({
+        "RALLY_VAPI_API_KEY": "private-key",
+        "RALLY_VAPI_ASSISTANT_ID": "assistant-1",
+        "RALLY_VAPI_PHONE_NUMBER_ID": "number-1",
+    })
+    assert configured.vapi_api_key == "private-key"
+    assert configured.vapi_assistant_id == "assistant-1"
+    assert configured.vapi_phone_number_id == "number-1"

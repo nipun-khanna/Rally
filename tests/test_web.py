@@ -72,6 +72,7 @@ def test_web_request_classifier_catches_public_lookup_without_chat_context():
     assert should_search_web('rally we are in atlanta and want eats nearby where should we go?')
     assert should_search_web('Hey Rally, search the web for a concert')
     assert should_search_web('Rally, what is the weather today?')
+    assert should_search_web('Rally, name one pizza place near downtown Atlanta')
     assert not should_search_web('Rally, what is our plan?')
     assert not should_search_web('Rally, hi')
 

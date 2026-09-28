@@ -76,13 +76,14 @@ def payload(chat, text, ident="m1", sender=SENDER, mine=False):
         "handle": {"address": sender}, "chats": [{"guid": chat}]}}
 
 
-def build(tmp_path, runtime=None, transport=None):
+def build(tmp_path, runtime=None, transport=None, web_answer_fn=None,
+          reservation_inbound=None):
     runtime = runtime or ScriptedRuntime()
     sent = []
     store = Store(tmp_path / "r.sqlite3")
     service = RallyService(store, QuietAgent(), lambda facts: [],
                            lambda chat, text: sent.append((chat, text)),
-                           allowed_chat_ids={GROUP})
+                           allowed_chat_ids={GROUP}, web_answer_fn=web_answer_fn)
     settings = type("S", (), {
         "browser_enabled": True,
         "browser_owner_chat_id": OWNER,
@@ -97,9 +98,17 @@ def build(tmp_path, runtime=None, transport=None):
         settings)
     inbound = BrowserInbound(OWNER, SENDER, task, lambda chat, text: sent.append((chat, text)),
                              allowed_chat_ids={GROUP})
+    if reservation_inbound == "auto":
+        from app.voice.caller import ReservationCaller
+        from app.voice.handler import ReservationCallInbound
+        reservation_inbound = ReservationCallInbound(
+            ReservationCaller(plan_store=store, dry_run=True),
+            lambda chat, text: sent.append((chat, text)),
+            allowed_chat_ids={GROUP})
     app = create_app(service, webhook_token="secret", schedule=False,
                      browser_runtime=runtime, browser_inbound=inbound,
-                     browser_admin_token=ADMIN, browser_enabled=True)
+                     browser_admin_token=ADMIN, browser_enabled=True,
+                     reservation_call_inbound=reservation_inbound)
     return TestClient(app), service, sent, runtime, task
 
 
@@ -111,7 +120,7 @@ def test_owner_private_browse_does_not_enter_group_memory(tmp_path):
     assert group.store.recent_messages(OWNER) == []
     assert group.store.recent_messages(GROUP) == []
     assert sent[0][0] == OWNER
-    assert sent[0][1].startswith("Rally:")
+    assert not sent[0][1].startswith("Rally:")
     assert "weather" in sent[0][1].lower()
     assert all(chat == OWNER and flag is True for chat, flag in runtime.authenticated)
     client.close()
@@ -156,22 +165,25 @@ def test_phone_handle_on_local_account_owner_can_open(tmp_path):
     assert phone.json()["accepted"] is True
     assert mac.json()["accepted"] is True
     assert denied.json()["accepted"] is False
-    assert all(text.startswith("Rally:") for _dest, text in sent)
+    assert sent and all(not text.startswith("Rally:") for _dest, text in sent)
     assert sum("example.com" in text.lower() for _dest, text in sent) == 2
     assert runtime.authenticated == [(chat, True), (chat, True)]
     client.close()
 
 
-def test_allowlisted_group_search_uses_browser(tmp_path):
+def test_allowlisted_group_search_uses_web_not_browser(tmp_path):
     runtime = ScriptedRuntime()
-    client, group, sent, runtime, task = build(tmp_path, runtime=runtime)
+    client, group, sent, runtime, task = build(
+        tmp_path, runtime=runtime,
+        web_answer_fn=lambda request, **kwargs: "Antico Pizza in Midtown.\nhttps://www.anticopizza.com/")
     response = client.post("/webhooks/bluebubbles?token=secret",
                            json=payload(GROUP, "Hey Rally, search for italian in midtown",
                                         sender="member"))
     assert response.json()["accepted"] is True
     assert sent[0][0] == GROUP
-    assert sent[0][1].startswith("Rally:")
-    assert "weather" in sent[0][1].lower()
+    assert "antico" in sent[0][1].lower()
+    assert runtime.actions == []
+    assert runtime.authenticated == []
     client.close()
 
 
@@ -180,7 +192,7 @@ def test_unallowlisted_group_cannot_use_browser(tmp_path):
     client, group, sent, runtime, task = build(tmp_path, runtime=runtime)
     other = "iMessage;+;other-group"
     response = client.post("/webhooks/bluebubbles?token=secret",
-                           json=payload(other, "Hey Rally, search for italian in midtown",
+                           json=payload(other, "Hey Rally, open https://example.com",
                                         sender="member"))
     assert response.json()["accepted"] is False
     assert runtime.actions == []
@@ -188,7 +200,7 @@ def test_unallowlisted_group_cannot_use_browser(tmp_path):
     client.close()
 
 
-def test_reservation_intent_waits_for_mac_confirm(tmp_path):
+def test_reservation_request_prepares_a_call_instead_of_browser_booking(tmp_path):
     runtime = ScriptedRuntime()
     runtime.page = BrowserObservation(
         "https://www.opentable.com/login", "Sign in", "Enter your password", ())
@@ -196,15 +208,20 @@ def test_reservation_intent_waits_for_mac_confirm(tmp_path):
     def transport(schema, prompt, data):
         return {"action": "fill", "role": "textbox", "name": "Password", "text": "stolen"}
 
-    client, group, sent, runtime, task = build(tmp_path, runtime=runtime, transport=transport)
+    client, group, sent, runtime, task = build(
+        tmp_path, runtime=runtime, transport=transport,
+        reservation_inbound="auto")
     response = client.post("/webhooks/bluebubbles?token=secret",
                            json=payload(GROUP, "Hey Rally, reserve a table at Carbone Friday 8",
                                         sender="member"))
     assert response.json()["accepted"] is True
-    assert sent[0][1].startswith("Rally:")
-    assert "you're all set" not in sent[0][1].lower()
-    assert "i booked" not in sent[0][1].lower()
-    assert "mac" in sent[0][1].lower() or "sign in" in sent[0][1].lower()
+    body = sent[0][1].lower()
+    assert not sent[0][1].startswith("Rally:")
+    assert "will not place a call" in body
+    assert "carbone" in body
+    assert "you're all set" not in body
+    assert "i booked" not in body
+    assert "stolen" not in body
     assert runtime.actions == []
     client.close()
 

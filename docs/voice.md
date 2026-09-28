@@ -36,7 +36,9 @@ Reference: [xAI Voice Agent API](https://docs.x.ai/developers/model-capabilities
    matching the relationship reminders owner — see
    [relationship setup](relationship-setup.md)) and `RALLY_VOICE_MODEL`
    (default `grok-voice-latest`).
-4. Start the app, then open `http://127.0.0.1:8000/voice?token=<RALLY_ADMIN_TOKEN>`
+4. Start Rally on port 8770, the port BlueBubbles uses on this Mac (see
+   [README.md](../README.md)), then open
+   `http://127.0.0.1:8770/voice?token=<RALLY_ADMIN_TOKEN>`
    in a desktop browser on the same Mac and click **Start talking**. The
    first click prompts for microphone permission.
 
@@ -77,18 +79,104 @@ Rally: (calls confirm_action) "Sent."
 
 ## Restaurant reservation calls
 
-Allowlisted chats can ask Rally to **call the restaurant** and book a table.
-Grok Voice (`grok-voice-latest`) does the live back-and-forth. Rally then
-texts the group `booked`, `need confirm`, or `failed`. It will not say
-booked unless a live phone call produced a confirmation code.
+### Vapi outbound calls
 
-Example: `Hey Rally, call Taj and book for 4 at 8` (or the same ask during
-the five-minute Rally turn). Party size, time, name, and callback number
-come from the message, the current plan/proposal, or `RALLY_CALLBACK_NUMBER`.
+For an explicit addressed call request in an allowed chat, Rally dials the
+requested valid phone number through Vapi. Vapi hosts the phone
+audio, so this path does not depend on Phone.app, BlackHole, or the Mac voice
+worker. Rally reports that the call started, then checks Vapi for a final
+transport status and posts one follow-up in the same chat. An accepted or
+ended call does not establish that the person answered or that a booking
+happened. The saved Vapi assistant cannot read Rally's private app data yet.
 
-### Mac Phone call pipeline (no Twilio)
+Dial order in `ReservationCaller.run` when a destination number is present:
 
-`Hey Rally, call 7032004231` is one path:
+1. A restaurant-booking request stays in the restaurant brief and, once authorized, dials through Vapi. The phone number comes from a fetched public page, then Browser Use, then the local browser reader. That lookup does not use Geoapify.
+2. Any other request with a destination number dials Vapi when Vapi is configured.
+3. Twilio runs only when Vapi was not selected. `can_place_pstn_call` also requires `audio_bridge_ready()`, which currently returns false, and it accepts only the Continuity test number.
+4. Continuity Phone.app runs only after Vapi and Twilio both decline, and only for its allowlisted test number.
+
+To set it up, create or select a Vapi assistant, then connect an
+outbound-capable phone number in Vapi. Vapi's free phone numbers cannot place
+outbound calls. Put the private key, assistant ID, and phone number ID in the
+ignored `.env` as `RALLY_VAPI_API_KEY`, `RALLY_VAPI_ASSISTANT_ID`, and
+`RALLY_VAPI_PHONE_NUMBER_ID`. Do not put the key in chat or commit it. The
+assistant's model and voice are configured in Vapi; this integration does not
+send the local `grok-voice-latest` realtime stream into a Vapi call.
+
+The separate test helper remains pinned to `+16785991244`: run
+`python scripts/place_vapi_call.py` to validate local configuration and
+show the destination without calling. Run
+`python scripts/place_vapi_call.py --place` to place one call. The command
+prints the Vapi call ID and initial provider status; check that ID in the Vapi
+dashboard for the subsequent outcome. `--number` rejects any number other
+than `+16785991244`.
+
+For example, `Rally, call +16785991244` uses the app workflow when configured.
+Rally will not claim a reservation until a separate confirmation exists.
+
+References: [Vapi outbound calling](https://docs.vapi.ai/calls/outbound-calling),
+[create a call](https://docs.vapi.ai/api-reference/calls/create), and
+[get call status](https://docs.vapi.ai/api-reference/calls/get).
+
+### Restaurant reservations
+
+A group request such as `Hey Rally, reserve a table at Carbone` or
+`Hey Rally, call Taj and book...` does not book through the browser and does
+not use the local demo loopback as a real reservation. Rally:
+
+1. Searches public results, then fetches the result page. A phone counts only
+   when that fetched page names the restaurant. If a city was requested, that
+   page must also name the city, even when it publishes only one number.
+   New York, NYC, and Brooklyn match one another. A city that is only in the
+   request is not treated as printed on the page. A search snippet is not a
+   verified number. If the homepage has no single number, Rally follows
+   contact or location links. When a Browser Use client is configured, Rally
+   asks it to open a page past the homepage and then fetches that URL itself.
+   Two published locations become a location question, not a request for the
+   group to type a phone number.
+2. The saved brief has an exact date, time (`7:30pm` or `19:30`), timezone,
+   party size, and reservation name. `tonight`, `tomorrow`, and a month and
+   day without a year are resolved from the clock once the timezone is known.
+   A named city such as New York, or one city on the fetched page, supplies
+   that timezone. The reply shows the resolved date and zone before any yes.
+   The owner name and callback number come only from the message or, for the
+   callback, `RALLY_CALLBACK_NUMBER` when that value is already configured.
+   Rally asks when either is absent. It does not use the voice-owner account
+   id as a person's name, and it does not reuse the restaurant number as the
+   callback.
+3. Replies with that brief and waits for an explicit yes in the same chat
+   (`yes`, `place the call`, `go ahead`). A later booking message in that
+   chat updates the open brief unless the restaurant name changes. Another
+   chat, or a yes that also changes a term, does not authorize the old brief.
+   The dial claim is saved before the provider POST. A claim that never
+   receives a provider id is reported for a manual Vapi check and is not dialed
+   again.
+4. Saves the brief in `restaurant_call_snapshots` before any dial. The Vapi
+   create-call body passes `assistantOverrides` for that snapshot: the opening
+   line is `I am calling on behalf of [owner]...`, the system prompt does not
+   volunteer an AI label, and a direct question about automation is answered
+   truthfully. The saved relationship-check-in assistant is not the script for
+   this call. Ordinary `Rally, call +1...` requests still use that assistant
+   and do not require this brief.
+5. After the call ends, reports **booked** only when a restaurant-side turn
+   (user, customer, or host in the Vapi messages, or a speaker-labeled
+   transcript) confirms the saved party, date, time, guest, and venue and
+   speaks a real confirmation code. Assistant narration, unlabeled text, and
+   structured model output do not confirm. The word `set` is not a code.
+   `ended` by itself stays **unresolved**.
+
+Set `RALLY_VAPI_API_KEY`, `RALLY_VAPI_ASSISTANT_ID`, and
+`RALLY_VAPI_PHONE_NUMBER_ID` before a real authorized call. There is no
+fixed destination list in the app. The helper `scripts/place_vapi_call.py`
+remains limited to `+16785991244` and is separate from this workflow. This
+tree's dry-run path builds the override payload and does not POST it.
+
+See [restaurant demo check](restaurant-demo-check.md).
+
+### Mac Phone call pipeline
+
+This is the Continuity fallback after Vapi and Twilio decline. With Vapi configured, an explicit destination number dials Vapi first. `Hey Rally, call 7032004231` reaches Phone.app only when that fallback is the one selected:
 
 1. Open Phone.app with `tel://` (allowlisted number only).
 2. Rally clicks **Click to Call** itself (green chip, top-right).
@@ -100,9 +188,9 @@ Without a number (or Continuity off), Rally uses the mock-host loopback and stil
 
 Dev helper: `scripts/place_test_call.py --method phone` (or `--dry-run`).
 
-### What is needed to actually dial
+### Twilio fallback
 
-True PSTN outbound uses Twilio:
+Vapi is the PSTN path used for configured outbound calls. Twilio is the next branch, and it stays closed while `audio_bridge_ready()` is false. When that gate is opened, Twilio still accepts only the Continuity test number and needs:
 
 | Key | Role |
 |---|---|

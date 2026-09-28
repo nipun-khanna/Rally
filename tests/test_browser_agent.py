@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 import pytest
 
 from app.browser.agent import (
-    BrowserActionDecision, BrowserTaskService, ToolContext,
+    BrowserActionDecision, BrowserTaskService, PublicRestaurantLookup, ToolContext,
     answer_from_page, looks_like_browser_request, looks_like_reservation_request,
+    page_for_venue,
 )
 from app.browser.runtime import BrowserObservation
 from app.browser.store import BrowserStore
@@ -118,6 +119,7 @@ def test_allowlisted_group_can_search(tmp_path):
     assert "booked" not in result["answer"].lower()
     assert runtime.actions[0]["action"] == "search"
     assert runtime.authenticated
+    assert all(flag is False for flag in runtime.authenticated)
 
 
 def test_unallowlisted_group_cannot_use_browser(tmp_path):
@@ -170,6 +172,30 @@ def test_vendor_agent_handles_search_open_and_reserve(tmp_path):
     assert runtime.actions == []
 
 
+def test_vendor_reservation_without_page_url_does_not_claim_page_open(tmp_path):
+    vendor = FakeVendor()
+    vendor.result = {"status": "ok", "answer": "I found options", "url": "", "waiting": False}
+    service = BrowserTaskService(FakeRuntime(), BrowserStore(tmp_path / "r.sqlite3"),
+                                 lambda *a: {"action": "complete", "answer": "no"},
+                                 settings(), vendor_agent=vendor)
+    result = service.run(context(text="Rally, reserve a table", message_id="m-no-url"),
+                         "Rally, reserve a table")
+    assert result["status"] == "awaiting_human"
+    assert "on the reservation page" not in result["answer"].lower()
+    assert "no reservation" in result["answer"].lower()
+
+
+def test_vendor_reservation_failure_is_not_human_wait(tmp_path):
+    vendor = FakeVendor()
+    vendor.result = {"status": "failed", "answer": "Browser task failed", "url": "", "waiting": False}
+    service = BrowserTaskService(FakeRuntime(), BrowserStore(tmp_path / "r.sqlite3"),
+                                 lambda *a: {"action": "complete", "answer": "no"},
+                                 settings(), vendor_agent=vendor)
+    result = service.run(context(text="Rally, reserve a table", message_id="m-failed"),
+                         "Rally, reserve a table")
+    assert result["status"] == "failed"
+
+
 def test_vendor_failure_falls_back_to_local_browser(tmp_path):
     runtime = FakeRuntime()
     vendor = FakeVendor(error=RuntimeError("Hosted browser request failed"))
@@ -201,7 +227,7 @@ def test_reservation_waits_and_does_not_claim_booked(tmp_path):
     assert "i booked" not in result["answer"].lower()
     assert "sign in" in result["answer"].lower() or "mac" in result["answer"].lower()
     assert looks_like_reservation_request("Hey Rally, reserve a table at Carbone")
-    assert looks_like_browser_request("Hey Rally, search for italian in midtown")
+    assert not looks_like_browser_request("Hey Rally, search for italian in midtown")
 
 
 def test_wait_for_human_does_not_fill_passwords(tmp_path):
@@ -376,3 +402,101 @@ def test_page_injection_cannot_mark_group_authenticated(tmp_path):
     service.run(context(), "Summarize https://news.example.com/inject")
     assert all(flag is True for flag in runtime.authenticated)
     assert runtime.actions[0]["url"] == "https://news.example.com/account"
+
+
+def test_published_phone_is_reported_without_a_browser_booking(tmp_path):
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation(
+        "https://carbone.example/contact", "Carbone",
+        "Carbone reservations. Phone (212) 555-0199.", ())
+    service = BrowserTaskService(
+        runtime, BrowserStore(tmp_path / "r.sqlite3"),
+        lambda *a: {"action": "complete", "answer": "You're all set, I booked it."},
+        settings())
+    result = service.run(
+        context(text="Hey Rally, reserve a table at Carbone", message_id="phone"),
+        "Hey Rally, reserve a table at Carbone")
+    assert result["status"] == "awaiting_human"
+    assert "+12125550199" in result["answer"]
+    assert "no reservation was made" in result["answer"].lower()
+    assert "you're all set" not in result["answer"].lower()
+    assert "i booked" not in result["answer"].lower()
+
+
+def test_vendor_url_is_read_without_the_owner_profile():
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation(
+        "https://carbone.example/visit", "Carbone",
+        "Carbone New York. Call (212) 555-0177.", ())
+
+    class Vendor:
+        def run_task(self, request, timeout_seconds=90):
+            assert "signed-in browser profile" in request
+            return {"url": "https://carbone.example/visit",
+                    "answer": "The phone is (212) 555-0100"}
+
+    runtime.vendor = Vendor()
+    page = page_for_venue(runtime, "Carbone")
+    assert runtime.authenticated == [False, False]
+    assert runtime.actions == [{
+        "action": "navigate", "url": "https://carbone.example/visit"}]
+    assert page["url"] == "https://carbone.example/visit"
+    assert "555-0100" not in page["text"]
+
+
+def test_vendor_failure_still_searches_in_the_logged_out_session():
+    runtime = FakeRuntime()
+    runtime.page = BrowserObservation(
+        "https://carbone.example/contact", "Carbone",
+        "Carbone New York. Call (212) 555-0177.", ())
+
+    class Vendor:
+        def run_task(self, request, timeout_seconds=90):
+            raise RuntimeError("vendor down")
+
+    runtime.vendor = Vendor()
+    page = page_for_venue(runtime, "Carbone")
+    assert runtime.authenticated == [False, False]
+    assert runtime.actions[0]["action"] == "search"
+    assert "Carbone" in runtime.actions[0]["query"]
+    assert page["url"] == "https://carbone.example/contact"
+
+
+def test_lookup_vendor_does_not_call_the_owner_reader():
+    class Vendor:
+        def run_task(self, request, timeout_seconds=90):
+            return {"status": "ok", "url": "https://carbone.example/visit",
+                    "answer": "The phone is (212) 555-0100"}
+
+    def fetch(url):
+        if "duckduckgo" in url:
+            return "", ""
+        if url.rstrip("/") == "https://carbone.example/visit":
+            return "Carbone restaurant. Phone (212) 555-0166.", url
+        raise AssertionError(url)
+
+    def reader(*_args, **_kwargs):
+        raise AssertionError("owner reader used")
+
+    found = PublicRestaurantLookup(
+        fetch=fetch, browser_use=Vendor(), browser_reader=reader).find("Carbone")
+    assert found["number"] == "+12125550166"
+    assert found["source_url"] == "https://carbone.example/visit"
+
+
+def test_group_vendor_search_does_not_open_the_owner_profile(tmp_path):
+    runtime = FakeRuntime()
+    vendor = FakeVendor()
+    cfg = settings()
+    cfg.allowed_chat_ids = frozenset({"iMessage;+;HackGT13"})
+    service = BrowserTaskService(
+        runtime, BrowserStore(tmp_path / "r.sqlite3"),
+        lambda *a: {"action": "complete", "answer": "no"},
+        cfg, vendor_agent=vendor)
+    result = service.run(
+        context(chat_id="iMessage;+;HackGT13", sender_id="member",
+                text="Hey Rally, search for italian in midtown", message_id="g-search"),
+        "Hey Rally, search for italian in midtown")
+    assert result["status"] == "complete"
+    assert runtime.authenticated == []
+    assert runtime.actions == []

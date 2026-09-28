@@ -35,11 +35,11 @@ from app.latency import record_latency
 from app.policy import (eligible_for_intervention, eligible_for_revival,
                         explicitly_addresses_rally, unfinished_plan,
                         valid_approval, valid_calendar_approval)
-from app.places import PlacesError
+from app.places import PlacesError, venue_attribution
 from app.reactions import DONE_REACTION, SEEN_REACTION, completion_reaction
 from app.reservations import create_reservation
 from app.store import Store
-from app.web import should_search_web
+from app.web import should_search_web, contextual_web_request, is_score_request
 from app.tone import group_tone
 from app.adaptive.handler import should_use_adaptive
 
@@ -168,14 +168,12 @@ _NO_ANSWER = re.compile(r"^\s*no(?:\s+|_)answer\s*$", re.I)
 HELP_REPLY = (
     "i recap the plan (including pre-join history), flag conflicts, forget a "
     "fact if you ask, and answer questions on this thread. i can pick a "
-    "restaurant — i can't book a reservation over text alone, and i will not "
-    "call restaurants. i can start a call only to the allowlisted test number "
-    "on the mac phone app, click call myself, and put grok voice on "
-    "this computer's mic and speakers. "
+    "restaurant and, after you confirm the details here, call them to try a "
+    "reservation — i won't claim a table is booked until they say so. "
     "public dashboard is rallyplans.vercel.app (never an admin token). i can "
-    "use the browser, search, and fill public forms. i can draw or send images, and "
-    "generate or send a real video. ping me and i stay in the convo for 5 min; "
-    "i'll nudge if y'all stall."
+    "search the public web; i open a browser only if you ask me to open a site. "
+    "i can draw or send images, and generate or send a real video. ping me and "
+    "i stay in the convo for 5 min; i'll nudge if y'all stall."
 )
 _REPEAT_TEMPLATE = re.compile(
     r"^(?:here's the plan|nothing locked yet)\b|still no spot",
@@ -244,10 +242,11 @@ def _reservation_reply(request: str, snap=None, facts=None) -> str:
         picked = facts.location
     if picked:
         name = str(picked).split(",")[0].strip()
-        return (f"{name} works — that's the spot. i can't actually book a "
-                "reservation over text — ask me to open the site or try a voice call.")
-    return ("i can't actually book a reservation over text. pick a spot and "
-            "i'll lock the name, or ask me to open the site / try a voice call.")
+        return (f"{name} works — that's the spot. i'll collect the reservation "
+                "details and call them after you confirm in this chat. "
+                "nothing is booked yet.")
+    return ("pick a spot and i'll collect the reservation details, then call "
+            "them after you confirm in this chat. nothing is booked yet.")
 
 
 def _named_option_pick(request: str, facts) -> str | None:
@@ -549,10 +548,19 @@ def _recap_from_snapshot(snap, facts, proposal) -> str:
             "ask me to pick a restaurant if you want a name.")
 
 
-def _venue_fits_constraints(venue, snap) -> bool:
-    name = f"{getattr(venue, 'name', '')} {' '.join(getattr(venue, 'cuisine_tags', ()) or [])}".lower()
-    if snap.get("dietary") and _MEAT_HINT.search(name):
+def _venue_fits_constraints(venue, snap, excluded=()) -> bool:
+    """False when the venue's own name or cuisine tags show a known conflict.
+
+    A missing tag is not evidence the place suits a diet.
+    """
+    blob = f"{getattr(venue, 'name', '')} {' '.join(getattr(venue, 'cuisine_tags', ()) or ())}".lower()
+    if snap.get("dietary") and _MEAT_HINT.search(blob):
         return False
+    tags = {tag.lower() for tag in (getattr(venue, "cuisine_tags", ()) or ())}
+    for item in excluded or ():
+        token = (item or "").strip().lower()
+        if token and (token in tags or re.search(rf"\b{re.escape(token)}\b", blob)):
+            return False
     return True
 
 
@@ -657,31 +665,87 @@ class RallyService:
 
     def _hydrate_prior_thread(self, message: ChatMessage):
         """Load recent BlueBubbles history every time Rally is about to act."""
-        self._hydrate_chat(message.chat_id, skip_id=message.message_id)
+        self._hydrate_chat(message.chat_id, skip_id=message.message_id, as_of=message.sent_at)
 
-    def _hydrate_chat(self, chat_id: str, skip_id: str | None = None):
+    def ingest_recent_history(self, now: datetime | None = None) -> int:
+        """Pick up allowlisted messages BlueBubbles never webhooked as new-message."""
         if not self.history_fn:
-            return
+            return 0
+        chats = self.allowed_chat_ids or ()
+        as_of = now or datetime.now(timezone.utc)
+        replayed = 0
+        for chat_id in list(chats):
+            if not self._chat_allowed(chat_id):
+                continue
+            with self._chat_lock(chat_id):
+                replayed += self._hydrate_chat(chat_id, as_of=as_of)
+        return replayed
+
+    def _hydrate_chat(self, chat_id: str, skip_id: str | None = None,
+                      as_of: datetime | None = None) -> int:
+        if not self.history_fn:
+            return 0
         try:
             prior = self.history_fn(chat_id, 50)
         except Exception as exc:
             _log_scheduled_failure("thread hydrate", exc)
-            return
+            return 0
         if not prior:
-            return
+            return 0
+        as_of = as_of or datetime.now(timezone.utc)
+        missed: list[ChatMessage] = []
+        replaying = getattr(self, "_replaying_history", False)
         for item in prior:
             if (not isinstance(item, ChatMessage) or item.chat_id != chat_id
                     or item.message_id == skip_id):
                 continue
-            if self.store.add_message(item):
+            added = self.store.add_message(item)
+            if item.is_from_rally:
+                if added:
+                    self.store.mark_processed(item.message_id)
+                continue
+            if (self.store.is_processed(item.message_id)
+                    or self.store.has_message("direct_reply", item.message_id)):
+                if added:
+                    self.store.mark_processed(item.message_id)
+                continue
+            if not replaying and self._missed_live_inbound(item, as_of):
+                missed.append(item)
+            elif added:
                 self.store.mark_processed(item.message_id)
+        if replaying or not missed:
+            return 0
+        self._replaying_history = True
+        replayed = 0
+        try:
+            for item in sorted(missed, key=lambda row: (row.sent_at, row.message_id)):
+                try:
+                    if self._receive(item):
+                        replayed += 1
+                except Exception as exc:
+                    _log_scheduled_failure("missed inbound", exc)
+        finally:
+            self._replaying_history = False
+        return replayed
+
+    def _missed_live_inbound(self, item: ChatMessage, as_of: datetime) -> bool:
+        if item.is_from_rally or not (item.text or "").strip():
+            return False
+        age = as_of - item.sent_at
+        if age < timedelta(0) or age > timedelta(minutes=5):
+            return False
+        if explicitly_addresses_rally(item.text):
+            return True
+        return bool(self.group_turns and self.group_turns.active(item.chat_id, item.sent_at))
 
     def recover_pending(self, chat_id: str, *, limit: int = 75) -> int:
-        """Re-extract a bounded pending window without replaying replies or actions."""
+        """Re-extract one ordered prefix from the oldest pending row without replaying replies."""
         with self._chat_lock(chat_id):
             if not self._chat_allowed(chat_id):
                 raise ValueError("Chat is not allowed")
             messages, pending_ids = self.store.recovery_snapshot(chat_id, limit)
+            included = {message.message_id for message in messages}
+            pending_ids = [message_id for message_id in pending_ids if message_id in included]
             if not pending_ids:
                 return 0
             plan = self.store.get_plan(chat_id)
@@ -690,13 +754,26 @@ class RallyService:
             except Exception as exc:
                 self._record_extraction_failure(pending_ids, exc)
                 raise
-            if facts.activity:
+            if facts.activity and self._prefix_covers_plan_horizon(chat_id, messages, plan):
                 if (not plan or plan.state not in ("DONE", "ABANDONED") or
                         (facts.activity, facts.goal, facts.date) !=
                         (plan.facts.activity, plan.facts.goal, plan.facts.date)):
                     latest_human = max(message.sent_at for message in messages if not message.is_from_rally)
-                    self.store.save_plan(chat_id, facts, latest_human)
+                    if plan is None or latest_human >= plan.last_human_at:
+                        self.store.save_plan(chat_id, facts, latest_human)
             return self.store.mark_processed_many(chat_id, pending_ids)
+
+    def _prefix_covers_plan_horizon(self, chat_id: str, messages: list[ChatMessage], plan) -> bool:
+        """False when this prefix ends before a newer processed human decision."""
+        last = messages[-1]
+        if self.store.processed_human_after(chat_id, last.sent_at, last.message_id):
+            return False
+        human_at = [message.sent_at for message in messages if not message.is_from_rally]
+        if not human_at:
+            return False
+        if plan is not None and plan.last_human_at > max(human_at):
+            return False
+        return True
 
     def _receive(self, message: ChatMessage) -> bool:
         if not self._chat_allowed(message.chat_id) or message.is_from_rally or not message.text.strip():
@@ -1114,9 +1191,7 @@ class RallyService:
                             created_at=now.isoformat())
         self.store.save_proposal(proposal)
         display_time = self._display_time(proposed_time)
-        attribution = (" Venue data: Geoapify (https://www.geoapify.com/), "
-                       "© OpenStreetMap contributors (https://www.openstreetmap.org/copyright)."
-                       if venue.source == "geoapify" else " Demo venue data.")
+        attribution = venue_attribution(venue.source)
         approval_prompt = (" Reply 'Book it' for the demo reservation, or 'Book it and add a calendar event' for both."
                            if self.calendar_fn else " Reply 'Book it' for the demo reservation.")
         availability_note = (" This time fits the availability members reported and the Rally owner’s Google Calendar; other calendars weren’t checked."
@@ -1246,7 +1321,8 @@ class RallyService:
             self._react(message, SEEN_REACTION)
             self._handle_image_request(message)
             return True
-        if followup and not direct_call and _idle_chatter(message.text):
+        if (followup and not direct_call and _idle_chatter(message.text)
+                and not is_score_request(contextual_web_request(message, messages))):
             return False
         coalesced = bool(self.group_turns and self.group_turns.should_coalesce(
             message.chat_id, message.text, message.sent_at))
@@ -1267,6 +1343,7 @@ class RallyService:
             self._send_group_reply(message, text, allow_flood=allow_flood)
             self._finish_reaction(message, delivered=self.store.sent_message("direct_reply", message.message_id))
             self.store.mark_processed(message.message_id)
+            self._note_turn(message)
             return True
         memory_context = self.group_memory.prompt_context(message.chat_id, limit=12) if self.group_memory else ""
         if self._has_local_reply(message, plan):
@@ -1450,9 +1527,12 @@ class RallyService:
             except Exception as exc:
                 _log_scheduled_failure("adaptive answer", exc)
                 return "couldn't finish that. try me again in a minute.", False
-        if self.web_answer_fn and should_search_web(message.text):
+        web_request = contextual_web_request(message, messages)
+        if should_search_web(web_request) and (self.web_answer_fn or is_score_request(web_request)):
+            if not self.web_answer_fn:
+                return "Web search isn't configured, so I can't verify the current score.", False
             try:
-                return self.web_answer_fn(message.text, tone=group_tone(messages)), False
+                return self.web_answer_fn(web_request, tone=group_tone(messages)), False
             except Exception as exc:
                 _log_scheduled_failure("web answer", exc)
                 return ("web search is dead right now so i can't verify shit. try later."), False
@@ -1530,35 +1610,42 @@ class RallyService:
 
     def _recommend_restaurant(self, facts, messages, memory_context: str = "") -> str:
         snap = _thread_snapshot(messages, memory_context, facts)
+        place = snap.get("place") or (facts.location if facts and facts.location else None)
+        if not place:
+            return "which area should i look in?"
         search_facts = PlanFacts(**{**{
             "goal": facts.goal if facts else "",
             "activity": facts.activity if facts else snap.get("activity") or "dinner",
-            "location": (facts.location if facts and facts.location else None) or snap.get("place"),
+            "location": place,
             "preferred_cuisines": list(facts.preferred_cuisines) if facts and facts.preferred_cuisines else list(snap.get("options") or []),
             "excluded_cuisines": list(facts.excluded_cuisines) if facts else [],
             "date": facts.date if facts else None,
             "time": facts.time if facts else None,
             "party_size": facts.party_size if facts else None,
         }})
-        venues = []
         try:
             venues = list(self.search_fn(search_facts) or [])
+        except PlacesError as exc:
+            _log_scheduled_failure("restaurant search", exc)
+            if str(exc) in {"Plan location is missing", "The city is unclear"}:
+                return "which area should i look in?"
+            return "venue lookup is unavailable right now."
         except Exception as exc:
             _log_scheduled_failure("restaurant search", exc)
-        viable = [venue for venue in venues if _venue_fits_constraints(venue, snap)] or list(venues)
-        place = snap.get("place") or (facts.location if facts else None) or "the area you named"
+            return "venue lookup is unavailable right now."
+        excluded = list(facts.excluded_cuisines) if facts and facts.excluded_cuisines else []
+        viable = [venue for venue in venues if _venue_fits_constraints(venue, snap, excluded)]
+        meal = snap.get("activity") or (facts.activity if facts else None) or "dinner"
+        if not viable:
+            return f"nothing near {place} fits. what cuisine should i try?"
+        venue = viable[0]
+        why = [place]
         diet = (snap.get("dietary") or [None])[0]
-        meal = snap.get("activity") or (facts.activity if facts else "dinner")
-        if viable:
-            venue = viable[0]
-            why = [place]
-            if diet:
-                why.append(diet)
-            return (f"{venue.name} near {place} for {meal} — {', '.join(why)}. "
-                    "not a booking, just a rec.")
-        name = "Green Table" if diet else "An Italian Table"
-        why = diet or f"fits {place}"
-        return (f"{name} near {place} for {meal} — {why}. "
+        tags = {tag.lower() for tag in (getattr(venue, "cuisine_tags", ()) or ())}
+        if diet and tags.intersection({"vegetarian", "vegan"}):
+            why.append(diet)
+        demo = " demo venue data." if getattr(venue, "source", "") == "demo" else ""
+        return (f"{venue.name} near {place} for {meal} — {', '.join(why)}.{demo} "
                 "not a booking, just a rec.")
 
     def _proposal_context(self, plan) -> dict | None:

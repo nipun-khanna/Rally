@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Mapping
 
 from app.agent import GrokClient
-from app.bluebubbles import is_private_direct_chat, send_attachment, send_message
+from app.bluebubbles import (configure_outbound_echoes, is_private_direct_chat,
+                             send_attachment, send_message)
 from app.media import extract_video_url, verify_video_url
 from app.history import BlueBubblesHistoryClient, planning_message_from_archive
 from app.group_memory import GroupMemoryStore
@@ -18,7 +19,7 @@ from app.calendar import (CalendarApproval, CalendarCredentials, CalendarError,
                           create_calendar_event, get_calendar_busy)
 from app.muse import MuseExtractor
 from app.orchestrator import RallyService
-from app.places import PlacesError, Venue, geocode_location, search_places
+from app.places import PlacesError, Venue, discover_public_venues, geocode_location, search_places
 from app.store import Store
 from app.web import GrokWebClient
 from app.adaptive.agent import AdaptivePlanner
@@ -88,6 +89,9 @@ class Settings:
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
+    vapi_api_key: str = ""
+    vapi_assistant_id: str = ""
+    vapi_phone_number_id: str = ""
     callback_number: str = ""
     continuity_dial: bool = True
 
@@ -230,12 +234,16 @@ class Settings:
             twilio_account_sid=source.get("RALLY_TWILIO_ACCOUNT_SID", "").strip(),
             twilio_auth_token=source.get("RALLY_TWILIO_AUTH_TOKEN", "").strip(),
             twilio_from_number=source.get("RALLY_TWILIO_FROM_NUMBER", "").strip(),
+            vapi_api_key=source.get("RALLY_VAPI_API_KEY", "").strip(),
+            vapi_assistant_id=source.get("RALLY_VAPI_ASSISTANT_ID", "").strip(),
+            vapi_phone_number_id=source.get("RALLY_VAPI_PHONE_NUMBER_ID", "").strip(),
             callback_number=source.get("RALLY_CALLBACK_NUMBER", "").strip(),
             continuity_dial=source.get("RALLY_CONTINUITY_DIAL", "1") == "1",
         )
 
 
 def build_service(settings: Settings) -> RallyService:
+    configure_outbound_echoes(Path(settings.database_path).parent / "outbound-echo.json")
     store = Store(settings.database_path)
     agent = GrokClient(settings.xai_api_key, settings.grok_model,
                        default_city=settings.default_city, time_zone=settings.time_zone,
@@ -262,8 +270,6 @@ def build_service(settings: Settings) -> RallyService:
                 raise PlacesError("Demo venue fixture is only available in Midtown, New York")
             return [Venue("demo-italian", "An Italian Table", "123 Main St, Midtown, New York",
                           40.75, -73.98, ("italian",), source="demo")]
-        if not settings.geoapify_api_key:
-            raise PlacesError("Geoapify API key is missing")
         if not facts or not facts.location:
             raise PlacesError("Plan location is missing")
         location = facts.location
@@ -272,6 +278,12 @@ def build_service(settings: Settings) -> RallyService:
         if "," not in location:
             raise PlacesError("The city is unclear")
         day = datetime.now(timezone.utc).date().isoformat()
+        if not settings.geoapify_api_key:
+            if not store.consume_quota(day, settings.max_place_requests):
+                raise PlacesError("Free place-search budget reached")
+            if not store.consume_quota(day, settings.max_place_requests):
+                raise PlacesError("Free place-search budget reached")
+            return discover_public_venues(location)
         if not store.consume_quota(day, settings.max_place_requests):
             raise PlacesError("Free place-search budget reached")
         latitude, longitude = geocode_location(settings.geoapify_api_key, location)

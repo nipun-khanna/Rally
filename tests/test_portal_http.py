@@ -93,5 +93,58 @@ class PortalHttpTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/{public_id}/media/a1").status_code, 404)
 
 
+def test_restaurant_or_browser_return_still_archives_the_group_message(tmp_path):
+    path = tmp_path / "rally.sqlite3"
+    store = Store(path)
+    portal = PortalStore(path)
+    service = RallyService(store, Agent(), lambda facts: [], lambda chat, body: None,
+                           allowed_chat_ids={CHAT})
+
+    class Swallow:
+        def try_receive(self, _payload):
+            return True
+
+    client = TestClient(create_app(
+        service, webhook_token="secret", schedule=False, portal_store=portal,
+        browser_inbound=Swallow()))
+    payload = {"type": "new-message", "data": {
+        "guid": "book-1", "text": "hello from the group", "isFromMe": False,
+        "dateCreated": int(NOW.timestamp() * 1000),
+        "handle": {"address": "member"}, "chats": [{"guid": CHAT}, {"guid": CHAT}]}}
+    assert client.post("/webhooks/bluebubbles?token=secret", json=payload).status_code == 200
+    assert client.post("/webhooks/bluebubbles?token=secret", json=payload).status_code == 200
+    stored = portal.list_messages(CHAT)
+    assert [item["message_id"] for item in stored] == ["book-1"]
+    assert stored[0]["text"] == "hello from the group"
+    client.close()
+
+
+def test_direct_chat_is_excluded_from_live_portal_routes(tmp_path):
+    direct = "iMessage;-;owner"
+    path = tmp_path / "rally.sqlite3"
+    store = Store(path)
+    portal = PortalStore(path)
+    service = RallyService(store, Agent(), lambda facts: [], lambda chat, body: None,
+                           allowed_chat_ids={CHAT, direct})
+    client = TestClient(create_app(
+        service, webhook_token="secret", schedule=False, portal_store=portal))
+    direct_id = portal.ensure_group(direct)
+    portal.upsert_messages(direct, [{"message_id": "dm", "sender_id": "owner",
+                                    "text": "direct only secret", "sent_at": NOW.isoformat()}])
+    assert client.get(f"/{direct_id}").status_code == 404
+    assert client.get(f"/{direct_id}", params={"before": "2026-09-01"}).status_code == 404
+    assert client.get(f"/{direct_id}/media/a1").status_code == 404
+    assert client.post(f"/portal/admin/{direct}/import?token=secret").status_code == 404
+    group_id = portal.ensure_group(CHAT)
+    assert client.get(f"/{group_id}").status_code == 200
+    payload = {"type": "new-message", "data": {
+        "guid": "dm-live", "text": "direct only secret", "isFromMe": False,
+        "dateCreated": int(NOW.timestamp() * 1000),
+        "handle": {"address": "owner"}, "chats": [{"guid": direct}]}}
+    assert client.post("/webhooks/bluebubbles?token=secret", json=payload).status_code == 200
+    assert portal.list_messages(direct, limit=20)[0]["message_id"] == "dm"
+    client.close()
+
+
 if __name__ == "__main__":
     unittest.main()

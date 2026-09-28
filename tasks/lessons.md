@@ -1,5 +1,10 @@
 # Project lessons
 
+## 2026-09-27 — Verify replies from other group members
+
+- User correction: a successful test from the owner's iMessage account does not prove that Rally replies to other participants.
+- Rule: inspect the other participant's inbound row and matching outbox record separately. Keep a direct Rally request from going silent solely because the model marks it irrelevant or returns no answer; test both sender identities.
+
 ## 2026-09-26 — Do not impose an arbitrary search cutoff
 
 - User correction: the twenty-per-day web search limit blocked expected Rally use.
@@ -117,3 +122,29 @@
 
 - User correction: a called Rally should not answer every follow-up or repeated call when the group is spammed.
 - Rule: treat relevance as permission to consider a reply, then require usefulness and apply burst coalescing plus a per-group rate cap before sending a text or reaction. Keep explicit approvals and safety controls operable.
+
+## 2026-09-27 — Preserve the proven Continuity calling and audio path
+
+- Only call Akshit at +17032004231 using Phone's tel URL on `feat/mac-phone-grok-voice`. Confirm with the green Continuity pill button; Notification Center's reported click is not evidence of a call.
+- Keep system input BlackHole 2ch, system output MacBook Pro Speakers, Phone microphone/output Use System Setting, and Grok playback BlackHole 2ch. Do not replace these with aggregate devices or select Phone's microphone by BlackHole name.
+- Diagnose mouth and ears separately: beep into BlackHole verifies transmit routing with recipient feedback; receive audio uses a process tap of speaker playback. `response.done` and playback-started establish generation/local playback only.
+- User correction: perform call confirmation through computer use. Use `sky` to press the green Continuity control; when capture is unavailable, the user explicitly supplied the 1512×982-display coordinate (1449,80). Inspect call state afterward; a click alone is not a placed-call result.
+- User explicitly approved adding Ghostty's System Audio Recording Only permission. Carry that authorization forward; do not re-ask for the same permission. Verify the toggle and actual capture separately, since a preexisting tap can stay silent until its host restarts.
+- On an active Continuity call, inspect the Mute/Unmute control before changing audio routing. `Unmute` means transmit is blocked even when Grok produces a healthy BlackHole signal. User unmuted after this was observed; verify a new response afterward.
+- User pivoted to Vapi for calling. Stop extending or debugging the local Continuity/BlackHole path; preserve work and move the calling integration to the selected provider. The destination restriction remains Akshit-only until explicitly broadened.
+- User changed the Vapi test destination to +16785991244. This supersedes the earlier Akshit-only restriction for the new Vapi path; do not dial +17032004231 for subsequent Vapi tests.
+- User corrected the Twilio account status: it is not a trial. Do not suggest trial recipient verification as the active diagnosis for this account; prioritize Twilio Voice geographic permissions and the exact provider error from fresh call logs.
+- User corrected the interpretation of the Twilio phone number during Vapi testing. Explicitly distinguish the number that should ring from the provider-owned caller number before changing calling permissions or placing another call; suspend the old +16785991244 assumption until clarified.
+- User clarified that +16785991244 is a test-only destination. Keep the live-test CLI bounded, but do not hardcode that destination as the only number the actual Rally app can call; its workflow must use the number supplied in an authorized request.
+- User clarified that Rally should use its Vapi/Twilio caller number to call restaurants and make real reservations for the group. A generic relationship check-in assistant or a browser page lookup does not fulfill a restaurant booking request. Pass exact group reservation terms to a restaurant-specific caller, and report a booking only from restaurant confirmation evidence.
+- User corrected the restaurant call introduction: do not volunteer an AI label. Open by saying the call is on behalf of the configured owner, give the reservation request, and answer truthfully if directly asked about automation.
+
+## 2026-09-27 — Outbound texts are not signed Rally
+
+- User correction: remove the `Rally:` prefix before every outbound message, and keep ignoring Rally's own echoes.
+- Rule: format at the send boundary. Strip a legacy `Rally:` prefix and do not add it back. Keep the body's original case so confirmation codes and other identifiers are not lowercased. Drop inbound `isFromMe` echoes only by confirmed guid, temp guid, or the short identical-text fallback while that id is unknown. An owner message that starts with `Rally:` is a human message unless its id is a known bot send.
+## 2026-09-27 — Direct repair and named-call coverage
+
+- User correction: handle the missed-call bug directly rather than delegating it to Cursor. This supersedes the earlier Cursor-only preference for this repair.
+- A supported number-only call test does not prove name-based calling. Test the user's exact named command at the webhook boundary and require a durable provider call id before claiming a call started.
+- Route unresolved explicit call requests to deterministic clarification. Do not allow a conversation model to promise execution without the calling backend.

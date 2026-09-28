@@ -19,18 +19,20 @@ def test_phone_app_url_and_method_chain():
     assert "Call" in placed["confirm"]
 
 
-def test_phone_uses_2ch_loopback_not_16ch():
-    from app.voice.audio_route import GROK_TO_PHONE, PHONE_TO_GROK
+def test_phone_uses_2ch_mouth_and_speaker_playback():
+    from app.voice.audio_route import CALL_PLAYBACK, GROK_TO_PHONE
     assert GROK_TO_PHONE == "BlackHole 2ch"
-    assert PHONE_TO_GROK == "BlackHole 16ch"
+    assert CALL_PLAYBACK == "MacBook Pro Speakers"
 
 
 def test_phone_video_io_script_exists():
     from pathlib import Path
     script = Path("scripts/set_phone_blackhole.applescript")
     text = script.read_text()
-    assert "menu item 12" in text
-    assert "menu item 19" in text
+    assert "menu item 12" not in text
+    assert "menu item 19" not in text
+    assert 'whose name is "Use System Setting"' in text
+    assert "AXMenuItemMarkChar" in text
     assert callable(apply_phone_app_io)
 
 

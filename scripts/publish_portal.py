@@ -8,10 +8,16 @@ import re
 import subprocess
 from pathlib import Path
 
+from app.bluebubbles import is_private_direct_chat
 from app.config import Settings
 from app.portal_store import PortalStore
 from app.store import Store
-from scripts.export_portal import export_group, export_portal
+from scripts.export_portal import (
+    _export_group_unlocked,
+    _export_portal_unlocked,
+    _private_chats,
+    portal_export_lock,
+)
 
 
 def _digest(directory: Path) -> str:
@@ -27,6 +33,8 @@ def _digest(directory: Path) -> str:
 
 
 def _deploy(settings: Settings, output: Path, *, project: str) -> str:
+    if not output.is_dir():
+        return "nothing to publish"
     digest = _digest(output)
     marker = settings.database_path.parent / "portal_publish_hash"
     if marker.exists() and marker.read_text() == digest:
@@ -51,18 +59,17 @@ def _deploy(settings: Settings, output: Path, *, project: str) -> str:
 
 def publish(settings: Settings, *, project: str = "rallyplans",
             output_dir: str | Path = "data/portal_build") -> str:
-    """Rebuild and deploy only when every archive import completed and content changed."""
+    """Publish the current archive snapshot, including visible import progress."""
     if os.environ.get("RALLY_PORTAL_PUBLISH_APPROVED") != "1":
         raise RuntimeError("External publication has not been enabled")
-    portal_store = PortalStore(settings.database_path)
-    if not settings.allowed_chat_ids or any(
-            portal_store.import_state(chat_id)["status"] != "complete"
-            for chat_id in settings.allowed_chat_ids):
-        return "waiting for complete history import"
-    output = Path(output_dir).resolve()
-    export_portal(settings.database_path, settings.database_path.parent / "portal_media",
-                  settings.allowed_chat_ids, output)
-    return _deploy(settings, output, project=project)
+    PortalStore(settings.database_path)
+    if not settings.allowed_chat_ids:
+        return "no allowed chats"
+    with portal_export_lock(output_dir) as output:
+        _export_portal_unlocked(settings.database_path,
+                                settings.database_path.parent / "portal_media",
+                                settings.allowed_chat_ids, output)
+        return _deploy(settings, output, project=project)
 
 
 def publish_live(settings: Settings, chat_id: str, *, project: str = "rallyplans",
@@ -72,13 +79,16 @@ def publish_live(settings: Settings, chat_id: str, *, project: str = "rallyplans
         raise RuntimeError("External publication has not been enabled")
     if chat_id not in settings.allowed_chat_ids:
         raise PermissionError("Chat is not allowed")
-    from app.dashboard_live import sync_live_context
-    portal_store = PortalStore(settings.database_path)
-    sync_live_context(Store(settings.database_path), portal_store, chat_id)
-    output = Path(output_dir).resolve()
-    export_group(settings.database_path, settings.database_path.parent / "portal_media",
-                 chat_id, output)
-    return _deploy(settings, output, project=project)
+    with portal_export_lock(output_dir) as output:
+        portal_store = PortalStore(settings.database_path)
+        private = is_private_direct_chat(chat_id) or chat_id in _private_chats(portal_store)
+        if not private:
+            from app.dashboard_live import sync_live_context
+            sync_live_context(Store(settings.database_path), portal_store, chat_id)
+        _export_group_unlocked(settings.database_path,
+                               settings.database_path.parent / "portal_media",
+                               chat_id, output)
+        return _deploy(settings, output, project=project)
 
 
 if __name__ == "__main__":

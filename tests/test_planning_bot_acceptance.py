@@ -175,8 +175,8 @@ def test_disallowed_chat_cannot_ingest_or_reply(tmp_path):
                                  "Our page: https://rallyplans.vercel.app/CaseSensitiveId"])
 def test_production_transport_identity_preserves_public_urls(body):
     outgoing = add_rally_signature(body)
-    assert outgoing.startswith("Rally: ")
-    assert outgoing.count("Rally:") == 1
+    assert not outgoing.lower().startswith("rally:")
+    assert outgoing.count("Rally:") == 0
     if "https://" in body:
         assert "https://rallyplans.vercel.app/CaseSensitiveId" in outgoing
 

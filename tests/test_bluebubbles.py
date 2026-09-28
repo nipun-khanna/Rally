@@ -4,11 +4,17 @@ from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
 
+import time
+from unittest.mock import patch
+
 from app.bluebubbles import (
     DeliveryUncertainError,
     IncomingMessage,
+    _ECHO_TEXT_TTL_SECONDS,
+    configure_outbound_echoes,
     is_private_direct_chat,
     normalize_webhook,
+    reset_outbound_echoes,
     send_attachment,
     send_message,
 )
@@ -46,6 +52,9 @@ class FakeResponse:
 
 
 class BlueBubblesTests(unittest.TestCase):
+    def setUp(self):
+        reset_outbound_echoes()
+
     def test_private_direct_chat_accepts_service_dash_id(self):
         self.assertTrue(is_private_direct_chat("iMessage;-;+15555550100"))
         self.assertTrue(is_private_direct_chat("any;-;+15555550100"))
@@ -67,9 +76,18 @@ class BlueBubblesTests(unittest.TestCase):
         self.assertEqual(message.sent_at, datetime.fromtimestamp(1_727_452_800, timezone.utc))
         self.assertFalse(message.is_from_rally)
 
-    def test_ignores_non_message_and_direct_chat(self):
+    def test_updated_message_is_still_inbound(self):
         event = group_event()
         event["type"] = "updated-message"
+        message = normalize_webhook(event)
+        self.assertIsNotNone(message)
+        self.assertEqual(message.text, "Dinner Friday?")
+        event["type"] = "message-updated"
+        self.assertEqual(normalize_webhook(event).message_id, "message-1")
+
+    def test_ignores_non_message_and_direct_chat(self):
+        event = group_event()
+        event["type"] = "chat-read-status"
         self.assertIsNone(normalize_webhook(event))
 
         event = group_event()
@@ -93,7 +111,18 @@ class BlueBubblesTests(unittest.TestCase):
         message = normalize_webhook(event)
         self.assertIsNotNone(message)
         self.assertEqual(message.sender_id, "local-imessage-account")
+        event["data"]["guid"] = "owner-typed-prefix"
         event["data"]["text"] = "Rally: Friday dinner is at 8."
+        self.assertIsNotNone(normalize_webhook(event))
+
+        def opener(request, timeout):
+            return FakeResponse({"status": 200, "message": "Message sent!",
+                                 "data": {"guid": "legacy-bot-guid"}})
+
+        send_message(
+            "https://bb.example/", "pw", "iMessage;+;chat123",
+            "Rally: Friday dinner is at 8.", opener=opener)
+        event["data"]["guid"] = "legacy-bot-guid"
         self.assertIsNone(normalize_webhook(event))
 
     def test_ignores_incomplete_and_nontext_payloads(self):
@@ -148,7 +177,8 @@ class BlueBubblesTests(unittest.TestCase):
             selected_message_guid="inbound-guid-1",
         )
         self.assertEqual(captured["body"]["chatGuid"], "any;+;chat536074477903103142")
-        self.assertEqual(captured["body"]["message"], "Rally: locked-in chaos.")
+        self.assertEqual(captured["body"]["message"], "locked-in chaos.")
+        self.assertFalse(captured["body"]["message"].startswith("Rally:"))
         self.assertEqual(captured["body"]["selectedMessageGuid"], "inbound-guid-1")
         self.assertEqual(captured["body"]["partIndex"], 0)
         self.assertTrue(captured["body"]["tempGuid"])
@@ -165,7 +195,7 @@ class BlueBubblesTests(unittest.TestCase):
             "https://bb.example/", "pw", "any;+;chat1", "Rally: still sending.",
             opener=opener, selected_message_guid="bad guid",
         )
-        self.assertEqual(captured["body"]["message"], "Rally: still sending.")
+        self.assertEqual(captured["body"]["message"], "still sending.")
         self.assertNotIn("selectedMessageGuid", captured["body"])
         self.assertNotIn("partIndex", captured["body"])
 
@@ -251,6 +281,126 @@ class BlueBubblesTests(unittest.TestCase):
                                 opener=failing_opener)
         self.assertNotIn("topsecret", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
+
+    def test_prefix_free_send_still_drops_its_own_echo(self):
+        import tempfile
+        from pathlib import Path
+
+        reset_outbound_echoes()
+        captured = {}
+
+        def opener(request, timeout):
+            captured["body"] = json.loads(request.data)
+            inflight = group_event()
+            inflight["data"].update({
+                "isFromMe": True, "handle": None, "guid": "inflight-unknown",
+                "text": "Dinner Friday at 8",
+            })
+            captured["inflight_dropped"] = normalize_webhook(inflight) is None
+            return FakeResponse({"status": 200, "message": "Message sent!",
+                                 "data": {"guid": "apple-guid-1"}})
+
+        try:
+            send_message(
+                "https://bb.example/", "pw", "iMessage;+;chat123",
+                "Rally: Dinner Friday at 8", opener=opener)
+            self.assertEqual(captured["body"]["message"], "Dinner Friday at 8")
+            self.assertTrue(captured["inflight_dropped"])
+            temp_guid = captured["body"]["tempGuid"]
+
+            echo = group_event()
+            echo["data"].update({
+                "isFromMe": True, "handle": None, "guid": "apple-guid-1",
+                "text": "Dinner Friday at 8",
+            })
+            self.assertIsNone(normalize_webhook(echo))
+
+            by_temp = group_event()
+            by_temp["data"].update({
+                "isFromMe": True, "handle": None, "guid": "not-the-apple-guid",
+                "tempGuid": temp_guid, "text": "Dinner Friday at 8",
+            })
+            self.assertIsNone(normalize_webhook(by_temp))
+
+            human = group_event()
+            human["data"].update({
+                "isFromMe": True, "handle": None, "guid": "human-probe",
+                "text": "Hey Rally, what's the plan?",
+            })
+            self.assertIsNotNone(normalize_webhook(human))
+
+            other_chat = group_event()
+            other_chat["data"].update({
+                "isFromMe": True, "handle": None, "guid": "other-chat-copy",
+                "text": "Dinner Friday at 8",
+                "chats": [{"guid": "iMessage;+;chat-other"}],
+            })
+            self.assertIsNotNone(normalize_webhook(other_chat))
+
+            same_words = group_event()
+            same_words["data"].update({
+                "isFromMe": True, "handle": None, "guid": "owner-repeat-now",
+                "text": "Dinner Friday at 8",
+            })
+            self.assertIsNotNone(normalize_webhook(same_words))
+
+            owner_prefix = group_event()
+            owner_prefix["data"].update({
+                "isFromMe": True, "handle": None, "guid": "owner-typed-prefix",
+                "text": "Rally: Friday dinner is at 8.",
+            })
+            self.assertIsNotNone(normalize_webhook(owner_prefix))
+            generated = group_event()
+            generated["data"].update({
+                "isFromMe": True, "handle": None, "guid": "apple-guid-1",
+                "text": "Rally: Friday dinner is at 8.",
+            })
+            self.assertIsNone(normalize_webhook(generated))
+
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "outbound-echo.json"
+                configure_outbound_echoes(path)
+                send_message(
+                    "https://bb.example/", "pw", "iMessage;+;chat123",
+                    "Saved reply", opener=opener)
+                stored = path.read_text()
+                self.assertNotIn("Saved reply", stored)
+                configure_outbound_echoes(path)
+                reloaded = group_event()
+                reloaded["data"].update({
+                    "isFromMe": True, "handle": None, "guid": "apple-guid-1",
+                    "text": "a different body",
+                })
+                self.assertIsNone(normalize_webhook(reloaded))
+        finally:
+            reset_outbound_echoes()
+
+    def test_text_fallback_expires_when_send_has_no_confirmed_id(self):
+        reset_outbound_echoes()
+
+        def opener(request, timeout):
+            return FakeResponse({"status": 200, "message": "Message sent!", "data": {}})
+
+        try:
+            send_message(
+                "https://bb.example/", "pw", "iMessage;+;chat123",
+                "Same words", opener=opener)
+            pending = group_event()
+            pending["data"].update({
+                "isFromMe": True, "handle": None, "guid": "owner-same-words",
+                "text": "Same words",
+            })
+            self.assertIsNone(normalize_webhook(pending))
+            later = time.time() + _ECHO_TEXT_TTL_SECONDS + 5
+            with patch("app.bluebubbles.time.time", return_value=later):
+                repeated = group_event()
+                repeated["data"].update({
+                    "isFromMe": True, "handle": None, "guid": "owner-same-words-later",
+                    "text": "Same words",
+                })
+                self.assertIsNotNone(normalize_webhook(repeated))
+        finally:
+            reset_outbound_echoes()
 
 
 if __name__ == "__main__":

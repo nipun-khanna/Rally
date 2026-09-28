@@ -610,3 +610,183 @@ results until teammates deliver.
 - [x] Verify configured GUID using `Settings.from_env`.
 
 Review: Saved configuration verified. No running Rally process was found on port 8770; the change will apply at next startup. No message sent.
+
+## Continuity audio repair — 2026-09-27
+
+- [x] Restore `feat/mac-phone-grok-voice` and inspect existing worker/logs.
+- [x] Verify system input BlackHole 2ch/output MacBook Pro Speakers; select Phone microphone/output Use System Setting; verify worker playback BlackHole 2ch.
+- [x] Recover stashed speaker process-tap implementation; fix positional Phone menu selections and worker ownership/shutdown; stop verified stale audio processes.
+- [x] Place call to Akshit (+17032004231) through computer use after user explicitly approved the visible Akshit Call control. Connected timer observed (0:12); one-second beep sent to BlackHole 2ch.
+- [ ] Verify receive audio after launching from an audio-authorized host. Current launch reports @AUTH granted=false and silent process tap; Ghostty is permitted in System Settings but computer use blocks its UI.
+
+Review: User reports hearing both beep and Grok from the observed test. Current connected call and beep injection verified separately. Focused tests: 29 passed. Full suite: 665 passed, 57 subtests passed, one existing recovery CLI allowlist failure (`tests/test_recovery.py::test_local_recovery_cli_status_and_explicit_run_guard`), one dependency warning. Four sandbox loopback failures pass when run with local socket permission. AppleScript compiles; diff and shell syntax checks pass. Stash preserved. No commit/push. Automatic approval review initially rejected stopping the active worker before a replacement launch. User then explicitly approved the restart; SIGTERM cleanly stopped worker/watcher and all capture/playback/tap children (exit 0). Ghostty launch command provided; waiting for user-run restart because computer use blocks Ghostty.
+
+### Receive permission follow-up
+
+- User restarted via Ghostty; one worker (34753) and one process tap (34765) were confirmed. Their stdout is `/tmp/rally-` due a truncated pasted redirection. Playback started and response.done appeared, but tap reports @AUTH granted=false and zero RMS.
+- User explicitly approved changing Ghostty audio permission. Added Ghostty to System Audio Recording Only through System Settings; verified switch ON. macOS prompted Quit & Reopen. Chose Later to preserve terminal sessions.
+- Three-second local speaker probe remained zero RMS on the existing tap. Host restart/relaunch and live receive verification remain pending. Computer Use cannot operate Ghostty (service safety restriction); user must perform the terminal restart/command.
+
+### Authorized restart and connected-call diagnosis
+
+- After Ghostty restart, worker 40374 reports @AUTH preflight=0. One tap is active; three-second speaker probe measured RMS 1277.7, proving system capture receives audio.
+- Called only Akshit via Phone tel URL and computer-use Call control; connected timer verified. Real speech transcribed, including "Hey Rally, this is Akshit", followed by response.done.
+- Independent BlackHole input meter measured Grok output RMS 3157.9 / peak 16740. Generation, playback, and receive path work locally.
+- Recipient reported no reply. Call UI then showed Unmute; user unmuted it, and UI now shows Mute. Waiting on a fresh spoken exchange to verify recipient audibility.
+
+## Switch outbound calls to Vapi — 2026-09-27
+
+User redirected work from Continuity transmit debugging to Vapi. Implement a bounded Vapi-backed dialer in the existing call flow, restricted to the new test destination `+16785991244`, with private provider configuration, a dry-run/live test CLI, and honest queued/active/ended status. Preserve existing uncommitted voice repairs.
+
+- [x] Inspect existing caller/configuration and primary Vapi outbound documentation.
+- [x] Obtain the Vapi key, assistant ID, and outbound-capable phone number ID through private local `.env` configuration.
+- [x] Implement Vapi adapter, configuration, caller wiring, and a dry-run/live test CLI.
+- [x] Verify refusal of other destinations, missing credentials, provider failures, and accepted-call status with offline tests.
+- [x] Document outbound setup and the distinction between queued and answered.
+- [x] Configure credentials privately, verify the imported Twilio caller number and assistant by Vapi API, and place one authorized Vapi test call to `+16785991244`.
+- [ ] Resolve Twilio outbound authorization for `+16785991244` (trial verified recipient or Voice Dialing Geographic Permissions / account restriction), then place a new single test call and verify ringing/connection.
+
+Review: The Vapi API can accept a call but does not itself prove the recipient answered. Offline verification: 87 focused tests passed; 701 tests passed with the unrelated browser-egress and recovery test files excluded; `git diff --check` passed. The complete suite has five unrelated failures: four local socket binds are denied by the sandbox, and one recovery CLI test conflicts with the checkout's local allowlist. Continuity transmit issue remains unresolved; no further routing changes planned under the superseding request.
+
+2026-09-27 live update: The owner populated private `.env` credentials. A sandboxed POST could not connect to Vapi; an unsandboxed read-only list found no call from it. Vapi read-only API checks then verified that the configured phone number ID is the imported Twilio number `+16786269367` and that the assistant ID exists. One authorized outbound POST to `+16785991244` returned call ID `01a0e1d9-7012-7000-85b5-93e6100b6349` as queued, but its subsequent record is `ended`, `startedAt=null`, `endedReason=call.start.error-get-transport`. Vapi's ended message says Twilio account is not authorized to call the destination. No ringing or conversation was verified. Do not retry before resolving Twilio account permissions.
+
+Owner correction: Twilio is not a trial account. At their request, one further call was attempted (`01a0e1db-c1df-7000-864e-8e4d09d170e9`) and ended before ringing with the same transport error. Read-only Computer Use inspection of the signed-in Twilio Console found Voice → Settings → Geo permissions → Low-Risk → United States/Canada (+1) visibly unchecked. Proposed change is enabling only that destination on Programmable Voice and saving. Computer Use skill requires action-time confirmation for changing cloud permissions; do not click/save until approved.
+
+The owner enabled the +1 permission themselves. After an explicit clarification that the intended flow is Vapi outbound from Twilio `+16786269367` to `+16785991244`, one new call (`01a0e1e7-44c1-7cce-8fbe-2785d36e65b5`) reached `in-progress` with a real start timestamp and later ended with `customer-ended-call`. The owner confirmed it worked. The attached assistant was an unrelated Riley clinic scheduler sample, so a dedicated Rally assistant is the next step.
+
+## Dedicated Rally Vapi assistant — 2026-09-27
+
+Create a separate saved assistant for Rally rather than changing the clinic sample. Reuse the voice and transcriber that succeeded on the real call; use Vapi's documented xAI `grok-4.3` model. The assistant should introduce itself as Rally, speak briefly, handle a live relationship check-in, and avoid claiming access to Rally's private data or taking actions until tool integration exists. Wire its ID into the app's private `.env`; keep the old sample for rollback. Verify the configuration through the Vapi API, then run one authorized outbound call if safe.
+
+- [x] Inspect the working Vapi call and existing assistant; confirm the sample is not Rally.
+- [x] Verify current Vapi assistant and xAI model schema in official docs.
+- [ ] Save a reviewable Rally assistant spec in the repo and validate its fields.
+- [ ] Create the assistant in Vapi, update only `RALLY_VAPI_ASSISTANT_ID` privately, and read it back.
+- [ ] Exercise a single authorized outbound call using the new assistant and inspect status/outcome.
+- [ ] Document what the assistant can do now and the public authenticated tool integration needed for live app data.
+
+## Live end-to-end audit and Vapi workflow — 2026-09-27
+
+User confirmed the dedicated Vapi assistant works and approved immediate dialing for explicit Rally call requests in allowed chats, with a later outcome message. The earlier destination restriction applied only to the test CLI, not the app. Test the running app without sending synthetic group messages or claiming a real restaurant booking without provider confirmation.
+
+- [ ] Run Rally on the configured BlueBubbles webhook port and verify health, browser, web search, and allowed-chat configuration.
+- [ ] Exercise live internet and a browser reservation discovery flow, stopping at the existing human sign-in/confirmation boundary; record exact result.
+- [ ] Generalize app Vapi dialing for explicit addressed requests, persist attempts, poll final transport outcome, and send one follow-up via the outbox. Keep the test CLI pinned.
+- [ ] Verify Vapi account/caller/assistant readiness and exercise the call workflow without an unintended repeat live call.
+- [ ] Repair stale portal publication so pending imports do not block all groups and an interrupted export cannot leave a half-built page; verify current group pages.
+- [ ] Run focused and broad tests, inspect logs and diff, then document live evidence and remaining limits below.
+
+### Review
+
+Pending live verification.
+
+## Runtime texting — remove Rally prefix — 2026-09-27
+
+User asked the runtime worker to drop the `Rally:` prefix on every outbound text, keep bot-echo deduplication, confirm the HackGT group from BlueBubbles, and run one labeled live text on port 8770 with portal publish forced off. No commits, no phone calls, no Vercel deploys. Do not edit `app/main.py`, `app/voice`, or the portal publish/export scripts.
+
+- [x] Format outbound texts without a `Rally:` prefix. Keep original case, including confirmation codes and other identifiers.
+- [x] Drop bot echoes by confirmed or temp message id, with identical text only as a short fallback while that id is unknown. Do not drop an owner `isFromMe` message only because it starts with `Rally:`.
+- [x] Update the formatting and transport tests that still require the prefix.
+- [x] Read BlueBubbles chat metadata and, if exactly one HackGT group is identified and missing from the private allowlist, add only that GUID.
+- [x] Start Rally on port 8770 with `RALLY_PORTAL_PUBLISH_APPROVED=0` and confirm `/health`.
+- [x] Send one labeled HackGT test text and record delivery and processing evidence without private message content.
+- [x] Run focused tests, fix failures, and write the result in `docs/runtime-demo-check.md` and `tasks/lessons.md`.
+
+Focused result: 159 passed, 2 subtests passed, one deprecation warning, 2.70s. Pid 68946 exited, so Rally was restarted as pid 71119 with publish override 0; health 200. HackGT13 guid `any;+;chat536074477903103142`. One labeled probe guid `937809A1-C35A-4575-A0E2-0DCD0FD8B9AD` got one `direct_reply` `sent`, unprefixed, exact `pong`. No second outbox row.
+
+Review follow-up: owner `Rally:` texts are no longer dropped unless the message id is a known bot send. Outbound case is preserved. Retest of the same files: 159 passed, 2 subtests passed, one deprecation warning, 2.34s. No additional HackGT text was sent.
+
+## Integration verification — 2026-09-27
+
+- [x] Run the full suite. Result: `752 passed`, `57 subtests passed`, one Starlette deprecation warning, 9.44s. No test-double failure was present, so no test was rewritten.
+- [x] `git diff --check` and `.venv/bin/python -m compileall -q app tests scripts` both exited 0.
+- [x] Pid 71119 was alive and was the stale 8770 server. Stopped only that process. Current server pid **76871**, started with `RALLY_PORTAL_PUBLISH_APPROVED=0`.
+- [x] `GET /health` returned `{"status":"ok"}` HTTP 200.
+- [x] `GET /browser/status` without a token returned 403. With the browser admin token it returned 200: `running` false, `installed` true, `profile` configured, `channel` chrome, `backend` browser-use.
+- [x] Three allowlisted group pages returned HTTP 200 HTML: `NTWi6v0vn-0eEj5qjFbX2X6b8pg8ktaP`, `t2aw0RjkAHme8l3kX-HudmKjLxw0Kox3`, and HackGT13 `C3JgCmCfInFygNDeMdKM3rHBFFr8kERN`.
+- [ ] One read-only HackGT web-search text. Not sent. Auto-review rejected it, and the approval retry returned `Rejected:` with no further reason. No other send path was used.
+
+No phone call was placed and nothing was deployed. Restaurant browser and voice files were not edited. The full suite did not expose a production failure to report. Public web search on this process is unverified.
+
+## Final tree verification — 2026-09-27
+
+Restaurant worker evidence, recorded in `docs/restaurant-demo-check.md`: 114 focused tests passed; a read-only lookup fetched the Williamsburg guide page and returned `+17183877400`; the dry-run payload was not posted. This check did not repeat that lookup or place a call.
+
+- [x] Full suite: `758 passed`, `57 subtests passed`, one Starlette deprecation warning, 9.68s. No fixture change.
+- [x] `git diff --check` exit 0. `.venv/bin/python -m compileall -q app tests scripts` exit 0.
+- [x] Revalidated pid `76871` as the only listener on 8770, stopped only that process, and started detached pid **80000** with `RALLY_PORTAL_PUBLISH_APPROVED=0`. Log: `data/runtime-8770.log`.
+- [x] Health 200. Authenticated `/browser/status` 200 (`running` false, backend `browser-use`). Unauthenticated status 403. Three group pages HTTP 200, including HackGT13.
+- [x] `scripts/browser_verify.py` read-only `example.com` through Browser Use: `title=Example Domain ok=true`.
+- [ ] Extra labeled HackGT web-search text. Still not sent. It needs a specific approval. Do not treat the earlier pong text as this check.
+- [ ] Vercel archive upload. `RALLY_PORTAL_PUBLISH_APPROVED` stays 0 for this process. `docs/portal-demo-check.md` still requires a person's approval before any upload.
+
+No provider account was changed, no phone call was placed, no BlueBubbles text was sent, and nothing was committed or deployed.
+
+## Final verification — 2026-09-27
+
+Restaurant fixes were already complete. This pass did not edit product code. The earlier focused restaurant run of 87 passed was not repeated. HackGT pong and the example.com Browser Use check were not repeated.
+
+- [x] Full suite: `760 passed`, `57 subtests passed`, one Starlette deprecation warning, 9.59s. No fixture failure, so no test was rewritten.
+- [x] `.venv/bin/python -m compileall -q app tests scripts` exit 0. `git diff --check` exit 0.
+- [x] Revalidated pid `80000` as the only listener on `127.0.0.1:8770`, stopped only that process, and started detached pid **82576** (PPID 1, session leader) with `RALLY_PORTAL_PUBLISH_APPROVED=0` and `--no-access-log`. Log: `data/runtime-8770.log`.
+- [x] Health HTTP 200 `{"status":"ok"}`. Python settings load did not print keys: publish override False, `.env` still `1`, allowlist count 4, HackGT13 guid present.
+- [x] Authenticated `/browser/status` HTTP 200 (`running` false, `installed` true, `profile` configured, `channel` chrome, `backend` browser-use). Unauthenticated status 403.
+- [x] Three allowlisted group pages HTTP 200 `text/html`: HackGT13 `C3JgCmCfInFygNDeMdKM3rHBFFr8kERN`, `NTWi6v0vn-0eEj5qjFbX2X6b8pg8ktaP`, and `t2aw0RjkAHme8l3kX-HudmKjLxw0Kox3`.
+- [ ] Reviewed Vercel public history snapshot upload. Not done. This process keeps `RALLY_PORTAL_PUBLISH_APPROVED=0`.
+- [ ] Extra live read-only web-search test text. Not sent. It needs an explicit approval.
+
+No phone call was placed, no BlueBubbles text was sent, and nothing was deployed or committed.
+
+## Production-state audit — 2026-09-27
+
+Read-only recheck of pid 82576. Evidence is in [docs/demo-state-audit.md](../docs/demo-state-audit.md). No text, call, or publish. The suite was not rerun: no Python file under `app`, `tests`, or `scripts` is newer than the process. Last recorded result remains `760 passed`, `57 subtests passed`. The goal stays open.
+
+- [x] Pid 82576, PPID 1, PGID 82576, state `Ss`, started 05:24:42 local, is the only listener on `127.0.0.1:8770`. `GET /health` is HTTP 200 `{"status":"ok"}`.
+- [x] Authenticated `/browser/status` is HTTP 200 (`running` false, `installed` true, `profile` configured, `channel` chrome, `backend` browser-use). Unauthenticated status is 403. The browser was not started.
+- [x] Settings, without printing keys: allowlist 4 (3 groups, 1 direct), HackGT13 present, history/browser/web/adaptive on, voice page off, Vapi configured, xAI present, Geoapify absent.
+- [x] Process environment `RALLY_PORTAL_PUBLISH_APPROVED=0` overrides `.env` value `1`. Log since startup is Uvicorn lifecycle only: no webhook latency, processing error, import failure, or publication line.
+- [x] Allowed-group outbox: 0 pending, 0 failed, 0 uncertain, 0 error rows. Sent rows are recorded in the audit note.
+- [x] Residual unprocessed human rows: HackGT13 63 `not_recorded`; `NTWi6v0vn-0eEj5qjFbX2X6b8pg8ktaP` 2 (one `extract`/`validation`); `t2aw0RjkAHme8l3kX-HudmKjLxw0Kox3` 6 `not_recorded`. Direct chat 0. Newer rows in each group are already processed.
+- [x] Local group pages HTTP 200. Database 05:30:44 local is newer than `data/portal_build` 05:08:58. HackGT archive has 378 rows and the local status line says 375. `t2aw0RjkAHme8l3kX-HudmKjLxw0Kox3` is `pending` at 2134 locally; the snapshot still says imported. Vercel root 200; HackGT page 200 at 165 messages (cache HIT); the other two group URLs 404. Direct portal path 404 locally and on Vercel.
+- [x] Demo-doc mismatches still in source: `docs/demo.md` port 8000 and `Rally:` echo wording; `docs/voice.md` port 8000 and Twilio-first PSTN wording. Vapi-first app dialing matches `docs/restaurant-demo-check.md`.
+- [ ] Public history deployment. Still unapproved. Automatic review rejected it. Publisher stays off on this process.
+- [ ] Additional live web-search group text. Still unapproved. Automatic review rejected it. No send was attempted.
+- [ ] Production demo goal complete.
+
+## Unprocessed-row follow-up — 2026-09-27
+
+Docs only. No production code, no database writes, no model context, no replies, no calls, no publish. Evidence is in [docs/demo-state-audit.md](../docs/demo-state-audit.md).
+
+- [x] Live BlueBubbles/Rally setup in `docs/demo.md` and `docs/voice.md` uses port 8770. The offline replay on port 8792 is unchanged.
+- [x] `docs/demo.md` documents no-prefix sends and echo matching by remembered send id.
+- [x] `docs/voice.md` documents Vapi-first routing. Twilio is a closed fallback (`audio_bridge_ready()` is false). Continuity is after that.
+- [x] Diagnosed 71 pending human rows from code and sanitized metadata. 70 are `attempts=0` / `not_recorded` because deferred extraction never finished and nothing retries them. 13 of those already have a sent `direct_reply`. One row, hash `1ad1911b4d5b`, is `extract` / `validation` with no reply.
+- [x] `recover_pending` cannot run on these groups: windows are 237, 218, and 237, above the hard cap of 200, so it raises before the extractor and before any `processed` update. Plans are ALIGNMENT v19, SPARK v13, and ABANDONED v20, with no pending proposal.
+- [x] Missing Geoapify blocks the old planner `search()` path only. Restaurant lookup is public page, then Browser Use, then the local reader, then Vapi. It does not call Geoapify.
+- [ ] Smallest safe recovery is still unwritten: one ordered prefix of at most 200 messages from the oldest pending row, explicit `--apply` before any model call, and mark processed only pending ids inside that prefix. Do not mark the 13 replied rows processed just to clear them.
+- [ ] Production demo goal complete.
+
+## Final demo verification — 2026-09-27
+
+Evidence is in [docs/final-demo-audit.md](../docs/final-demo-audit.md) and [tasks/final-demo-plan.md](final-demo-plan.md). No product code was edited. The suite from the first pass remains the latest run. Pid 440 was not restarted.
+
+Earlier unchecked web-text lines in the sections above are historical. They record passes from before the authorized send. The latest status is this section.
+
+- [x] Full suite: `790 passed`, `57 subtests passed`, one Starlette deprecation warning, 10.17s, exit 0. Not rerun.
+- [x] `.venv/bin/python -m compileall -q app tests scripts` exit 0. `git diff --check` exit 0.
+- [x] Allowlist is 4 chats (3 groups, 1 direct). HackGT13 guid is present.
+- [x] Earlier pong proof is one unprefixed `direct_reply` with status `sent`. Outbox was 195 `sent` at that pass.
+- [x] Logged-out `example.com` and the public web lookup are in [docs/integration-demo-check.md](../docs/integration-demo-check.md).
+- [x] SPARK v7 / `1709f0f13bd9` is `Store.get_plan` (`ORDER BY rowid DESC`) in the pre-recovery backup and in the current database. ABANDONED v20 is the highest version, rowid 9, not the current plan. Recovery did not change plans.
+- [x] HackGT's earlier 375 was the import counter at 08:57:38 UTC. Three archive rows were newer then. Analytics "Messages" is a separate count. Latest import detail is in the audit's status section.
+- [x] Historical export in that pass: 3 groups, 135 pages, 970 media, lines 378 / 10833 / 2134, each `History imported`.
+- [x] Live web group delivery. One authorized HackGT text, verified in [docs/live-web-text-check.md](../docs/live-web-text-check.md). Probe `B890F64B-FF5B-43DE-9994-98DC91ADFCA1`, one unprefixed `direct_reply` `sent`. Outbox is 197 `sent`. No second text.
+- [x] Later local export, still ignored `data/portal_build`: 3 groups, 135 pages, 970 media. Lines: HackGT `History imported · 380 messages` (archive 382, test rows included), `History import pending · 10833 messages`, `History imported · 2134 messages`. Direct chat absent. No `.env` or SQLite. Database size and mtime unchanged. Desktop 1280×800 and mobile 390×844 have no horizontal overflow. Pid 440, health 200, publication 0.
+- [ ] Public archive upload. Still unapproved. This is the only remaining approval. Publication stays 0. The last Vercel check was HackGT at 165 messages and the other two group URLs 404. Not uploaded again.
+- [ ] Production demo goal complete. Blocked only on that upload approval.
+# 2026-09-27 — Replies to other group members
+
+- [x] Trace Nipun's HackGT13 messages, webhook, and outbox without resending them.
+- [ ] Add a regression test for an explicitly addressed message from another member when the conversation model returns no answer.
+- [ ] Make direct requests yield a useful reply while retaining duplicate and flood controls.
+- [ ] Run focused tests, restart the live server, and verify health.

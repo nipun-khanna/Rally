@@ -25,10 +25,13 @@ def _hosted_origin(app_url: str | None) -> str:
 def sync_live_context(store, portal_store, chat_id: str) -> str:
     """Copy this chat's current thread into the public archive tables."""
     public_id = portal_store.ensure_group(chat_id)
+    known = {member["sender_id"] for member in portal_store.members(chat_id)}
     rows = []
     for message in store.recent_messages(chat_id, 100):
         sender = message.sender_id or "unknown"
-        portal_store.set_member(chat_id, sender, sender)
+        if sender not in known:
+            portal_store.set_member(chat_id, sender, sender)
+            known.add(sender)
         rows.append({
             "message_id": message.message_id,
             "sender_id": sender,

@@ -125,23 +125,33 @@ class Store:
                 'failures': [dict(row) for row in rows]}
 
     def recovery_snapshot(self, chat_id: str, limit: int = 75) -> tuple[list[ChatMessage], list[str]]:
-        """Return every message since the oldest pending one, or refuse a partial snapshot."""
+        """Return an ordered prefix of at most `limit` messages from the oldest pending row."""
         if not 1 <= limit <= 200:
             raise ValueError("Invalid recovery limit")
         with self._db() as db:
-            oldest = db.execute("""SELECT min(sent_at) FROM messages
-                WHERE chat_id=? AND processed=0 AND is_from_rally=0""", (chat_id,)).fetchone()[0]
+            oldest = db.execute("""SELECT sent_at, message_id FROM messages
+                WHERE chat_id=? AND processed=0 AND is_from_rally=0
+                ORDER BY sent_at, message_id LIMIT 1""", (chat_id,)).fetchone()
             if oldest is None:
                 return [], []
-            rows = db.execute("""SELECT * FROM messages WHERE chat_id=? AND sent_at>=?
-                ORDER BY sent_at,message_id LIMIT ?""", (chat_id, oldest, limit + 1)).fetchall()
-        if len(rows) > limit:
-            raise ValueError("Pending conversation exceeds bounded recovery window")
+            rows = db.execute("""SELECT * FROM messages WHERE chat_id=? AND (
+                    sent_at > ? OR (sent_at = ? AND message_id >= ?))
+                ORDER BY sent_at, message_id LIMIT ?""",
+                (chat_id, oldest["sent_at"], oldest["sent_at"], oldest["message_id"], limit)).fetchall()
         messages = [ChatMessage(row["message_id"], row["chat_id"], row["sender_id"], row["text"],
                                 datetime.fromisoformat(row["sent_at"]), bool(row["is_from_rally"]))
                     for row in rows]
         pending_ids = [row["message_id"] for row in rows if not row["processed"] and not row["is_from_rally"]]
         return messages, pending_ids
+
+    def processed_human_after(self, chat_id: str, sent_at: datetime, message_id: str) -> bool:
+        """True when a processed human row sorts after this prefix boundary."""
+        stamp = sent_at.isoformat()
+        with self._db() as db:
+            row = db.execute("""SELECT 1 FROM messages WHERE chat_id=? AND processed=1
+                AND is_from_rally=0 AND (sent_at > ? OR (sent_at = ? AND message_id > ?))
+                LIMIT 1""", (chat_id, stamp, stamp, message_id)).fetchone()
+        return row is not None
 
     def pending_count(self, chat_id: str) -> int:
         with self._db() as db:

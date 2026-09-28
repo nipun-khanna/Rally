@@ -9,6 +9,8 @@ from app.browser.agent import ToolContext, looks_like_browser_request
 from app.browser.log import chat_label, logger
 from app.message_text import add_rally_signature
 from app.policy import explicitly_addresses_rally
+from app.web import is_score_request, should_search_web
+from app.voice.caller import looks_like_restaurant_booking
 
 
 _APPROVAL = re.compile(r"^\s*(approve|cancel)\s+([A-Za-z0-9]{6,8})\s*$", re.I)
@@ -22,7 +24,7 @@ def format_browser_result(result: dict) -> str:
     status = result.get("status")
     if status == "awaiting_approval":
         code = result["code"]
-        return (f"Rally: I need your approval to {result.get('summary') or 'continue'}. "
+        return (f"I need your approval to {result.get('summary') or 'continue'}. "
                 f"Reply approve {code} or cancel {code}.")
     if status == "awaiting_human":
         body = result.get("answer") or (
@@ -84,6 +86,13 @@ class BrowserInbound:
                 return False
             self.send_fn(incoming.chat_id, format_browser_result(result))
             return True
+        # Grounded xAI web search owns lookups. Explicit page control
+        # (open a URL, click, fill) still uses the browser.
+        if looks_like_restaurant_booking(incoming.text):
+            return None
+        if not looks_like_browser_request(incoming.text) and (
+                is_score_request(incoming.text) or should_search_web(incoming.text)):
+            return None
         if not browser_intent or not (invoked or self._in_turn(incoming)):
             return None
         try:

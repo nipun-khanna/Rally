@@ -1,4 +1,4 @@
-"""Local Grok Voice bridged into Phone.app via BlackHole, not Mac speakers."""
+"""Local Grok Voice: mouth on BlackHole 2ch, ears on a speaker process tap."""
 
 from __future__ import annotations
 
@@ -6,8 +6,14 @@ import asyncio
 import base64
 import json
 import multiprocessing
+import os
+import queue
+import select
+import subprocess
+import threading
 import time
-from typing import Callable
+from pathlib import Path
+from typing import Callable, Iterable
 
 from app.voice.audio_route import (
     GROK_TO_PHONE,
@@ -16,6 +22,7 @@ from app.voice.audio_route import (
     cables_ready,
     loudest_channel_pcm16,
     pcm16_rms,
+    resample_pcm16,
 )
 from app.voice.session import build_reservation_session_payload
 
@@ -57,8 +64,114 @@ def _device_input_channels(name: str, fallback: int = 2) -> int:
     return fallback
 
 
+def pump_process_tap(
+    chunks: Iterable[bytes], incoming, speaking, stop, *, chunk_bytes: int = 9600,
+) -> None:
+    buf = bytearray()
+    for piece in chunks:
+        if stop.is_set():
+            break
+        buf.extend(piece)
+        while len(buf) >= chunk_bytes:
+            call = bytes(buf[:chunk_bytes])
+            del buf[:chunk_bytes]
+            if speaking.value:
+                continue
+            try:
+                incoming.put_nowait(call)
+            except Exception:
+                pass
+    if buf and not stop.is_set() and not speaking.value:
+        try:
+            incoming.put_nowait(bytes(buf))
+        except Exception:
+            pass
+
+
+def _tap_script() -> Path:
+    return Path(__file__).resolve().parents[2] / "scripts" / "tap_system_out.swift"
+
+
+def capture_process_tap(incoming, speaking, stop) -> bool:
+    script = _tap_script()
+    if not script.is_file():
+        return False
+    proc = subprocess.Popen(
+        ["swift", str(script), "--exclude-pid", str(os.getpid())],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    src_rate = {"hz": _RATE}
+    ready = threading.Event()
+
+    def drain_err():
+        for raw in iter(proc.stderr.readline, b""):
+            line = raw.decode("utf-8", "replace")
+            print(line.rstrip(), flush=True)
+            parts = line.split()
+            if parts[:1] == ["@RATE"] and len(parts) > 1:
+                try:
+                    src_rate["hz"] = int(parts[1])
+                except ValueError:
+                    pass
+            if line.startswith("@READY"):
+                ready.set()
+
+    stderr_thread = threading.Thread(target=drain_err, daemon=True)
+    stderr_thread.start()
+
+    def chunks():
+        hz = src_rate["hz"]
+        want = max(2, int(hz * 0.1) * 2)
+        last = time.monotonic()
+        while not stop.is_set():
+            if not select.select([proc.stdout], [], [], 0.1)[0]:
+                continue
+            data = os.read(proc.stdout.fileno(), want)
+            if not data:
+                break
+            if hz != _RATE:
+                data = resample_pcm16(data, hz, _RATE)
+            now = time.monotonic()
+            if now - last >= 2:
+                print("call-tap-rms", round(pcm16_rms(data), 1), "process-tap", flush=True)
+                last = now
+            yield data
+
+    try:
+        deadline = time.monotonic() + 60
+        while not ready.is_set():
+            if stop.is_set():
+                return True
+            if proc.poll() is not None or time.monotonic() >= deadline:
+                return False
+            ready.wait(0.1)
+        if stop.is_set():
+            return True
+        if proc.poll() is not None or proc.stdout is None:
+            return False
+        print("capture-started", "process-tap", flush=True)
+        pump_process_tap(chunks(), incoming, speaking, stop)
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+        stderr_thread.join(timeout=2)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+    return True
+
+
 def capture_call_tap(device: str, channels: int, incoming, speaking, stop) -> None:
-    """Own process: one PortAudio input stream on BlackHole."""
+    """Hear Phone far-end from Speakers via Core Audio tap; BlackHole is fallback."""
+    if capture_process_tap(incoming, speaking, stop):
+        return
     import sounddevice as sd
     last = time.monotonic()
 
@@ -174,7 +287,7 @@ class LocalGrokVoice:
         import websockets
 
         apply_phone_cables()
-        print("cables", GROK_TO_PHONE, PHONE_TO_GROK, flush=True)
+        print("cables", "in", GROK_TO_PHONE, "out", "speakers", "hear", "process-tap", flush=True)
         ctx = multiprocessing.get_context("spawn")
         incoming = ctx.Queue(maxsize=32)
         outgoing = ctx.Queue(maxsize=64)
@@ -191,7 +304,7 @@ class LocalGrokVoice:
             daemon=True)
         capture.start()
         playback.start()
-        print("streams-started", "tap", PHONE_TO_GROK, "play", GROK_TO_PHONE, flush=True)
+        print("streams-started", "tap", "process-or-blackhole", "play", GROK_TO_PHONE, flush=True)
 
         payload = build_reservation_session_payload(tools=self.tools, brief=brief)
         url = f"wss://api.x.ai/v1/realtime?model={self.model}"
@@ -209,8 +322,11 @@ class LocalGrokVoice:
                     await asyncio.sleep(1)
         finally:
             stop.set()
-            capture.join(timeout=2)
-            playback.join(timeout=2)
+            for process in (capture, playback):
+                process.join(timeout=2)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=2)
 
     async def _run_socket(self, websockets, url, payload, incoming, outgoing) -> None:
         async with websockets.connect(
@@ -222,7 +338,10 @@ class LocalGrokVoice:
             async def pump_mic():
                 await session_ready.wait()
                 while True:
-                    chunk = await asyncio.to_thread(incoming.get)
+                    try:
+                        chunk = await asyncio.to_thread(incoming.get, timeout=0.25)
+                    except queue.Empty:
+                        continue
                     await ws.send(json.dumps({
                         "type": "input_audio_buffer.append",
                         "audio": base64.b64encode(chunk).decode("ascii"),
@@ -246,8 +365,8 @@ class LocalGrokVoice:
                                 "type": "response.create",
                                 "response": {
                                     "instructions": (
-                                        "Say clearly: Hi, this is Rally. I can hear you. "
-                                        "Please speak and I will answer."
+                                        "Say clearly: Hey Akshit, this is Rally, "
+                                        "can you hear me?"
                                     ),
                                 },
                             }))

@@ -91,7 +91,8 @@ def _conversation_job(request: str) -> str:
                 "claim the table is booked; do not recap")
     if _RESERVATION_JOB.search(text) and not _RECAP_JOB.search(text):
         return ("acknowledge any venue they picked; you cannot book over text "
-                "alone — mention the browser or a voice call; do not recap")
+                "alone — say you'll call the restaurant after they confirm "
+                "details in chat; do not recap")
     if _RESTAURANT_JOB.search(text) and not _RECAP_JOB.search(text):
         return ("pick a specific restaurant with a one-line why; not a booking; "
                 "do not recap")

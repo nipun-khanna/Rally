@@ -25,8 +25,9 @@ def test_add_rally_signature_keeps_url_case_in_the_middle_of_text():
     outbound = add_rally_signature(
         f"here's the group page: {DASHBOARD_URL} the admin desk stays on the Mac.")
     assert DASHBOARD_URL in outbound
-    assert outbound.startswith("Rally: here's the group page: ")
-    assert outbound.endswith("the admin desk stays on the mac.")
+    assert outbound.startswith("here's the group page: ")
+    assert not outbound.lower().startswith("rally:")
+    assert outbound.endswith("the admin desk stays on the Mac.")
 
 
 def test_dashboard_reply_keeps_mixed_case_url_after_signature():
@@ -40,9 +41,14 @@ def test_dashboard_reply_keeps_mixed_case_url_after_signature():
     assert "page" in outbound.lower()
 
 
-def test_add_rally_signature_still_lowercases_non_url_body():
-    assert add_rally_signature("Dinner Friday at 8") == "Rally: dinner friday at 8"
-    assert add_rally_signature("Rally: Dinner Friday") == "Rally: dinner friday"
+def test_add_rally_signature_keeps_case_and_confirmation_codes():
+    assert add_rally_signature("Dinner Friday at 8") == "Dinner Friday at 8"
+    assert add_rally_signature("Rally: Dinner Friday") == "Dinner Friday"
+    code = "A1B2C3"
+    outbound = add_rally_signature(f"Rally: Reply approve {code} or cancel {code}.")
+    assert outbound == f"Reply approve {code} or cancel {code}."
+    assert code in outbound
+    assert code.lower() not in outbound.replace(code, "")
 
 
 def test_remove_rally_signature_strips_prefix():

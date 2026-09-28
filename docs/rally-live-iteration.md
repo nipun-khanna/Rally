@@ -30,7 +30,7 @@ This document describes the **process**. Do not freeze `decide_conversation` pro
 | Flood cap | Rally sends at most **3 replies per chat per rolling minute** (`app/group_turns.py`). Safety/portal/approval paths may bypass. Your probes still count. |
 | Coalesce | Same inbound text within **15 seconds** is coalesced — no second reply. Change the probe text each send. |
 | Do not spam | Cap live sends (default **6 per session**). Wait until you have a reply or a clear timeout before the next send. Space probes by **≥20 seconds**. |
-| `Rally:` prefix / lowercase | Outbound Rally texts are formatted at the BlueBubbles boundary as `Rally: {lowercase body}` (`add_rally_signature`). Inbound `isFromMe` + `Rally:` is dropped as an echo. |
+| No `Rally:` prefix / lowercase | Outbound Rally texts are formatted at the BlueBubbles boundary as lowercase body text with no `Rally:` prefix (`add_rally_signature`). Inbound `isFromMe` echoes are dropped by confirmed guid or temp guid. Identical text is a fallback only until that id is known, and for at most 60 seconds. Older `isFromMe` texts that still start with `Rally:` are also dropped. |
 
 Illegal-assistance probes: local `illegal_assistance_request` and `safety=refuse` fail closed (`I can't help with that.`). Do not keep sending crime-facilitation texts after one refusal check.
 
@@ -67,9 +67,9 @@ Address Rally so `explicitly_addresses_rally` matches: start with `Rally` / `@Ra
 
 **`isFromMe` / `is_from_rally`:**
 
-- Your BlueBubbles send uses the signed-in Apple account, so the webhook usually has `isFromMe: true` and `sender_id` `local-imessage-account`. That is a **human** probe if the text does **not** start with `Rally:`.
-- `normalize_webhook` drops only `isFromMe` texts that match `^\s*Rally\s*:`. Do not prefix probes with `Rally:` or Rally will ignore them.
-- Stored inbound rows have `is_from_rally=false`. Rally's own reply is queued, sent with the signature, and recorded as `is_from_rally=true` (`rally-out:{inbound-id}`).
+- Your BlueBubbles send uses the signed-in Apple account, so the webhook usually has `isFromMe: true` and `sender_id` `local-imessage-account`. That is a **human** probe when the text was not just sent by Rally.
+- `normalize_webhook` drops `isFromMe` texts that match `^\s*Rally\s*:` and `isFromMe` echoes of texts Rally itself sent. Do not prefix probes with `Rally:`.
+- Stored inbound rows have `is_from_rally=false`. Rally's own reply is queued, sent without a `Rally:` prefix, and recorded as `is_from_rally=true` (`rally-out:{inbound-id}`).
 
 ## How to know Rally ingested
 
@@ -79,7 +79,7 @@ Address Rally so `explicitly_addresses_rally` matches: start with `Rally` / `@Ra
 | Webhook | BlueBubbles `new-message` → `POST /webhooks/bluebubbles?token=<RALLY_WEBHOOK_TOKEN>` on **8770** (not 8000). Rally returns `{"accepted": true}` when the chat is allowlisted and the event is a usable group message. `accepted: false` means ignored (echo, empty, non-group, duplicate processed). **503** means processing threw (often provider). |
 | SQLite | `RALLY_DATABASE_PATH` (default `data/rally.sqlite3`): inbound row for your text; later an `outbox` row `kind=direct_reply` with `status=sent` (or `uncertain` / `failed`). |
 | Logs | Server stdout (access log is off). Look for `group_conversation stage=decision elapsed_ms=…` then `stage=send elapsed_ms=…`. Do not log message text or credentials. |
-| BlueBubbles history | `GET /api/v1/chat/{guid}/message` — a later `isFromMe` text starting with `Rally:` is the bot reply. |
+| BlueBubbles history | `GET /api/v1/chat/{guid}/message` — a later `isFromMe` text that does not start with `Rally:` can be the bot reply. Confirm it with the outbox row rather than by printing the text. |
 
 **Reload after code changes.** The README start command is factory uvicorn **without** `--reload`. Stop the 8770 process (Ctrl-C in that terminal) and start it again with the same `set -a; . ./.env; set +a` + uvicorn line so `app/agent.py` / `app/orchestrator.py` load. Confirm `/health` before the next send.
 
@@ -97,7 +97,7 @@ Score the **visible reply**, not extract completeness.
 
 ```
 health → resolve allowlisted chat → send unique addressed probe
-     → poll reply + latency (webhook / outbox / Rally: history / logs)
+     → poll reply + latency (webhook / outbox / history / logs)
      → score fast / useful / knowledge
      → patch agent.py or orchestrator context (not a prompt snapshot war)
      → .venv/bin/python -m pytest -q <focused tests>
@@ -105,7 +105,7 @@ health → resolve allowlisted chat → send unique addressed probe
 ```
 
 1. **Send** one unique `Hey Rally, …` into HackGT13 or tarun devi only.
-2. **Poll** up to ~45s for `outbox` `direct_reply` `sent` and a `Rally:` line in history. Record decision `elapsed_ms` and wall time from send POST to sent. `uncertain` → inspect chat; no auto-retry.
+2. **Poll** up to ~45s for `outbox` `direct_reply` `sent`. Record decision `elapsed_ms` and wall time from send POST to sent. Do not print message text. `uncertain` → inspect chat; no auto-retry.
 3. **Patch** payload/routing/latency in `app/agent.py` and `app/orchestrator.py`. Leave a live-iterate agent's uncommitted prompt wording alone unless it is the bug.
 4. **Focused pytest** (pick what you touched), e.g. `tests/test_group_conversation_agent.py`, `tests/test_group_conversation_service.py`, `tests/test_agent.py`, `tests/test_service.py`. Automated tests must not send live iMessages.
 5. **Reload** uvicorn; `/health`; next probe with **different** text.

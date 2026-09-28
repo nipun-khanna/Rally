@@ -12,8 +12,13 @@ def main(argv=None) -> int:
     parser.add_argument('command', choices=('status', 'run'))
     parser.add_argument('--chat-id', help='Required when more than one group is allowlisted')
     parser.add_argument('--apply', action='store_true', help='Make one live model extraction call')
-    parser.add_argument('--limit', type=int, default=75, help='Maximum messages in the complete recovery window')
+    parser.add_argument('--limit', type=int, default=75,
+                        help='Ordered prefix size from the oldest pending row (1 through 200)')
     args = parser.parse_args(argv)
+    if args.command == 'run' and not args.apply:
+        parser.error('run requires --apply; this sends current group context to the configured extractor')
+    if args.command == 'run' and not 1 <= args.limit <= 200:
+        parser.error('Recovery limit must be from 1 through 200')
     settings = Settings.from_env()
     if args.chat_id:
         if args.chat_id not in settings.allowed_chat_ids:
@@ -28,8 +33,6 @@ def main(argv=None) -> int:
     if args.command == 'status':
         print(json.dumps({**store.pending_diagnostics(chat_id), 'would_send_messages': False}))
         return 0
-    if not args.apply:
-        parser.error('run requires --apply; this sends current group context to the configured extractor')
     if settings.extraction_provider == 'grok' and not settings.xai_api_key:
         parser.error('Configured extractor lacks an xAI key')
     if settings.extraction_provider == 'muse' and not settings.meta_model_api_key:

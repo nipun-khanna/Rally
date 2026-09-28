@@ -15,6 +15,9 @@ from urllib.request import Request, urlopen
 
 PLACES_URL = "https://api.geoapify.com/v2/places"
 GEOCODE_URL = "https://api.geoapify.com/v1/geocode/search"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+PUBLIC_USER_AGENT = "RallyVenueLookup/1.0 (+https://rallyplans.vercel.app)"
 
 
 class PlacesError(Exception):
@@ -134,3 +137,149 @@ def search_places(
         ) if isinstance(raw_categories, list) else ()
         venues.append(Venue(place_id, name, address, lat, lon, cuisine_tags))
     return venues
+
+
+def venue_attribution(source: str) -> str:
+    """Credit the provider that actually supplied the venue. Demo stays labeled."""
+    if source == "geoapify":
+        return (" Venue data: Geoapify (https://www.geoapify.com/), "
+                "© OpenStreetMap contributors (https://www.openstreetmap.org/copyright).")
+    if source == "openstreetmap":
+        return (" Venue data: © OpenStreetMap contributors "
+                "(https://www.openstreetmap.org/copyright).")
+    return " Demo venue data."
+
+
+def discover_public_venues(location: str, *, limit: int = 10, opener=None) -> list[Venue]:
+    """Find nearby restaurants from public OpenStreetMap data when Geoapify is unset.
+
+    A venue is returned only when the element itself has a name and street.
+    Missing tags are skipped. This does not report hours, a phone, or a booking.
+    """
+    if not location or not str(location).strip():
+        raise ValueError("location is required")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer")
+    opener = opener or urlopen
+    latitude, longitude = _geocode_nominatim(location, opener=opener)
+    return _search_overpass(latitude, longitude, limit=min(limit, 20), opener=opener)
+
+
+def _public_json(request: Request, *, opener, timeout: int, failure: str):
+    try:
+        with opener(request, timeout=timeout) as response:
+            return json.load(response)
+    except HTTPError as exc:
+        raise PlacesError(f"{failure} returned HTTP {exc.code}") from None
+    except (URLError, OSError, ValueError, UnicodeError):
+        raise PlacesError(f"{failure} failed") from None
+
+
+def _geocode_nominatim(location: str, *, opener) -> tuple[float, float]:
+    query = urlencode({"q": location, "format": "jsonv2", "limit": 1})
+    request = Request(
+        f"{NOMINATIM_URL}?{query}",
+        headers={"Accept": "application/json", "User-Agent": PUBLIC_USER_AGENT},
+    )
+    payload = _public_json(request, opener=opener, timeout=10, failure="Public geocoding")
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        raise PlacesError("Public search found no matching location")
+    try:
+        lat, lon = float(payload[0]["lat"]), float(payload[0]["lon"])
+    except (KeyError, TypeError, ValueError):
+        raise PlacesError("Public search returned invalid coordinates") from None
+    if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+        raise PlacesError("Public search returned invalid coordinates")
+    return lat, lon
+
+
+def _search_overpass(latitude: float, longitude: float, *, limit: int, opener) -> list[Venue]:
+    if not (math.isfinite(latitude) and -90 <= latitude <= 90):
+        raise ValueError("latitude must be between -90 and 90")
+    if not (math.isfinite(longitude) and -180 <= longitude <= 180):
+        raise ValueError("longitude must be between -180 and 180")
+    query = (
+        f"[out:json][timeout:15];"
+        f"(node[\"amenity\"=\"restaurant\"](around:3000,{latitude:.7f},{longitude:.7f});"
+        f"way[\"amenity\"=\"restaurant\"](around:3000,{latitude:.7f},{longitude:.7f}););"
+        f"out center 40;"
+    )
+    request = Request(
+        OVERPASS_URL,
+        data=urlencode({"data": query}).encode(),
+        headers={"Accept": "application/json", "User-Agent": PUBLIC_USER_AGENT},
+    )
+    payload = _public_json(request, opener=opener, timeout=20, failure="Public venue search")
+    if not isinstance(payload, dict) or not isinstance(payload.get("elements"), list):
+        raise PlacesError("Public venue search returned an invalid place collection")
+
+    venues = []
+    for element in payload["elements"]:
+        venue = _venue_from_osm(element)
+        if venue is None:
+            continue
+        venues.append(venue)
+    venues.sort(key=lambda venue: _meters(latitude, longitude, venue.lat, venue.lon))
+    return venues[:limit]
+
+
+def _venue_from_osm(element) -> Venue | None:
+    if not isinstance(element, dict):
+        return None
+    tags = element.get("tags")
+    if not isinstance(tags, dict):
+        return None
+    name = tags.get("name")
+    address = _osm_address(tags)
+    if not isinstance(name, str) or not name.strip() or not address:
+        return None
+    point = element.get("center") if isinstance(element.get("center"), dict) else element
+    try:
+        lat = float(point["lat"])
+        lon = float(point["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    kind = element.get("type")
+    element_id = element.get("id")
+    if kind not in ("node", "way") or isinstance(element_id, bool) or not isinstance(element_id, int):
+        return None
+    raw_cuisine = tags.get("cuisine")
+    cuisine_tags = tuple(
+        part.strip()
+        for part in raw_cuisine.replace(",", ";").split(";")
+        if part.strip()
+    ) if isinstance(raw_cuisine, str) else ()
+    return Venue(
+        f"osm-{kind}-{element_id}",
+        name.strip(),
+        address,
+        lat,
+        lon,
+        cuisine_tags,
+        source="openstreetmap",
+    )
+
+
+def _osm_address(tags: dict) -> str:
+    street = tags.get("addr:street")
+    if not isinstance(street, str) or not street.strip():
+        return ""
+    number = tags.get("addr:housenumber")
+    line = street.strip()
+    if isinstance(number, str) and number.strip():
+        line = f"{number.strip()} {line}"
+    parts = [line]
+    for key in ("addr:city", "addr:state"):
+        extra = tags.get(key)
+        if isinstance(extra, str) and extra.strip():
+            parts.append(extra.strip())
+    return ", ".join(parts)
+
+
+def _meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    mean_lat = math.radians((lat1 + lat2) / 2)
+    north = math.radians(lat2 - lat1) * 6371000
+    east = math.radians(lon2 - lon1) * 6371000 * math.cos(mean_lat)
+    return math.hypot(north, east)

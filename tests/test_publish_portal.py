@@ -74,9 +74,49 @@ def test_live_publish_does_not_wait_for_complete_import(tmp_path, monkeypatch):
 
     monkeypatch.setattr("scripts.publish_portal.subprocess.run", fake_run)
     output = tmp_path / "portal_build"
-    assert publish(settings, output_dir=output) == "waiting for complete history import"
+    assert publish(settings, output_dir=output) == "published"
+    html = (output / portal.ensure_group(chat) / "index.html").read_text(encoding="utf-8")
+    assert "History import pending" in html
+    other_html = (output / portal.ensure_group(other) / "index.html").read_text(encoding="utf-8")
+    assert "History import pending" in other_html
     assert publish_live(settings, chat, output_dir=output) == "published"
+    assert "History import pending" in (output / portal.ensure_group(other) / "index.html").read_text(encoding="utf-8")
     public_id = portal.ensure_group(chat)
     html = (output / public_id / "index.html").read_text(encoding="utf-8").lower()
     assert "taj" in html and "atlanta" in html and "indian" in html
-    assert [command[1] for command in calls] == ["link", "deploy"]
+    assert [command[1] for command in calls] == ["link", "deploy", "link", "deploy"]
+
+
+def test_live_publish_drops_a_relationship_source(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from app.relationships.store import RelationshipStore
+    from scripts.publish_portal import publish_live
+
+    monkeypatch.setenv("RALLY_PORTAL_PUBLISH_APPROVED", "1")
+    db = tmp_path / "rally.sqlite3"
+    Store(db)
+    portal = PortalStore(db)
+    chat = "iMessage;+;group"
+    public_id = portal.ensure_group(chat)
+    portal.upsert_messages(chat, [{"message_id": "m1", "sender_id": "a",
+                                  "text": "old private message", "sent_at": "2026-09-25"}])
+    relationship = RelationshipStore(db)
+    relationship.configure("owner", "iMessage;-;owner", "UTC")
+    relationship.upsert("owner", "Secret Friend", "message", 7, datetime.now(timezone.utc))
+    relationship.add_source("owner", chat, "Secret Friend")
+    settings = Settings.from_env({"RALLY_DATABASE_PATH": str(db),
+                                  "RALLY_ALLOWED_CHAT_GUIDS": chat})
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(stdout="https://rallyplans-live.vercel.app")
+
+    monkeypatch.setattr("scripts.publish_portal.subprocess.run", fake_run)
+    output = tmp_path / "portal_build"
+    output.mkdir()
+    (output / public_id).mkdir()
+    (output / public_id / "index.html").write_text("old private message", encoding="utf-8")
+    assert publish_live(settings, chat, output_dir=output) == "published"
+    assert not (output / public_id).exists()
+    built = "\n".join(path.read_text(encoding="utf-8")
+                      for path in output.rglob("*") if path.is_file())
+    assert "old private message" not in built

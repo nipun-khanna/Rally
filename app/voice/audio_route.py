@@ -1,9 +1,12 @@
-"""Route Grok Voice through virtual cables so Phone.app is the only I/O.
+"""Route Grok Voice onto the Phone call without using the Mac mic.
 
-Phone.app will play the far side to the Mac system output (even when the
-HUD says "using your iPhone"). It plays to real 2ch devices (speakers)
-but not to 16ch BlackHole. Use BlackHole 2ch for both Phone mic and
-Phone speaker so Grok can talk and listen on the same loopback.
+Uplink: BlackHole 2ch is the system input. Phone Video mic = Use System
+Setting, so Grok's playback is what the far side hears.
+
+Downlink: Phone plays the far side to real Speakers (even when the HUD
+says "using your iPhone"). FaceTime/Phone refuse BlackHole as an output
+device, so Grok hears a Core Audio process tap of that speaker mix
+instead of a 16ch loopback.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from pathlib import Path
 
 PHONE_SPEAKERS = "MacBook Pro Speakers"
 PHONE_HEADPHONES = "Rally Headphones"
+CALL_PLAYBACK = PHONE_SPEAKERS
 GROK_TO_PHONE = "BlackHole 2ch"
 PHONE_TO_GROK = "BlackHole 16ch"
 _SWITCH = "SwitchAudioSource"
@@ -39,8 +43,7 @@ def _switch(*args: str) -> str:
 
 
 def cables_ready() -> bool:
-    names = _switch("-a")
-    return GROK_TO_PHONE in names and PHONE_TO_GROK in names
+    return GROK_TO_PHONE in _switch("-a")
 
 
 def ensure_headphones() -> str:
@@ -62,7 +65,7 @@ def current_defaults() -> tuple[str, str]:
 
 
 def apply_phone_app_io() -> str:
-    """Phone.app ignores system defaults; I/O lives under Video."""
+    """Select and verify Phone's Use System Setting microphone and output."""
     script = Path(__file__).resolve().parents[2] / "scripts" / "set_phone_blackhole.applescript"
     if not script.is_file():
         return "no-script"
@@ -76,9 +79,11 @@ def apply_phone_cables() -> AudioRoute | None:
         return None
     prev_in, prev_out = current_defaults()
     _switch("-t", "input", "-s", GROK_TO_PHONE)
-    _switch("-t", "output", "-s", ensure_headphones())
-    apply_phone_app_io()
-    return AudioRoute(PHONE_TO_GROK, GROK_TO_PHONE, prev_in, prev_out)
+    _switch("-t", "output", "-s", CALL_PLAYBACK)
+    phone_io = apply_phone_app_io()
+    if phone_io != "phone-io:system-in,system-out":
+        print("phone-io-unverified", phone_io, flush=True)
+    return AudioRoute(CALL_PLAYBACK, GROK_TO_PHONE, prev_in, prev_out)
 
 
 def restore_defaults(route: AudioRoute | None) -> None:
@@ -88,6 +93,25 @@ def restore_defaults(route: AudioRoute | None) -> None:
         _switch("-t", "input", "-s", route.previous_input)
     if route.previous_output:
         _switch("-t", "output", "-s", route.previous_output)
+
+
+def resample_pcm16(chunk: bytes, src_rate: int, dst_rate: int = 48000) -> bytes:
+    if src_rate <= 0 or dst_rate <= 0 or src_rate == dst_rate:
+        return chunk
+    samples = array.array("h")
+    samples.frombytes(chunk[: len(chunk) - (len(chunk) % 2)])
+    if not samples:
+        return b""
+    n_out = max(1, int(round(len(samples) * dst_rate / src_rate)))
+    last = len(samples) - 1
+    out = array.array("h")
+    for index in range(n_out):
+        pos = 0.0 if n_out == 1 else index * last / (n_out - 1)
+        lo = int(pos)
+        hi = min(lo + 1, last)
+        frac = pos - lo
+        out.append(int(samples[lo] * (1 - frac) + samples[hi] * frac))
+    return out.tobytes()
 
 
 def pcm16_rms(chunk: bytes) -> float:

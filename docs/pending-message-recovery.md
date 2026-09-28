@@ -9,10 +9,14 @@ Recovery is a local operator action. Load `.env` into the shell as described in 
 .venv/bin/python -m scripts.recover_pending run --apply
 ```
 
-`status` prints the pending human-message count and sanitized extraction error categories. The current old backlog predates this diagnostic field, so it appears as `not_recorded`. `run` requires `--apply`; it sends the bounded stored conversation window for the one allowlisted group to the configured extractor. The default recovery window is 75 total messages and the command refuses a partial window. Use `--chat-id` only when more than one group is allowlisted, and `--limit` to set a reviewed window size.
+`status` prints the pending human-message count and sanitized extraction error categories. The current old backlog predates this diagnostic field, so it appears as `not_recorded`. `run` requires `--apply` before settings are loaded or the extractor is built. It sends one ordered prefix, starting at the oldest pending human row, to the configured extractor. The default prefix is 75 messages. `--limit` must be from 1 through 200; a longer history stays pending for the next explicit run. Use `--chat-id` only when more than one group is allowlisted.
 
-Recovery calls only the extractor, updates the current plan through normal versioning, and then marks the covered pending human messages processed. It never sends a direct reply, books a venue, creates a calendar event, or processes old approval phrases. A provider failure leaves the messages pending. The command replaces the send function with a hard failure as a guard against accidental outbound messages.
+Recovery calls only the extractor, then marks processed only the pending human ids inside that prefix. It never sends a direct reply, books a venue, creates a calendar event, or processes old approval phrases. A sent `direct_reply` does not clear a row by itself. A provider failure leaves the included rows pending. The command replaces the send function with a hard failure as a guard against accidental outbound messages.
+
+`save_plan` replaces `last_human_at` when the stored facts change, and a `DONE` or `ABANDONED` plan is not updated in place: the next save inserts a new current row. A prefix that ends before a newer processed human message, or before the current plan's `last_human_at`, is a historical slice. Recovery still extracts it and acks the included pending ids, and it does not call `save_plan`. The newer date, location, version, proposal, and abandoned state stay as they are.
+
+Those historical facts are not merged into the newer plan. A merge cannot tell which older fields the later processed messages superseded and which they left unchanged, so the extracted facts are dropped for plan state. A prefix that already reaches the newest processed human message, and whose newest human timestamp is at least `last_human_at`, still follows the normal save path.
 
 New extraction failures record only attempt count, stage, broad error kind and optional HTTP status. Message text and provider response bodies are not copied into these diagnostics.
 
-This is intended for a bounded backlog. Large or ongoing backlogs need slicing with a persisted cursor and retry backoff before automatic recovery is enabled.
+Each explicit run continues from the oldest row that is still pending. Automatic recovery stays off until a persisted cursor and retry backoff exist. The scheduler does not re-enter `receive`.

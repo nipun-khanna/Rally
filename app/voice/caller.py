@@ -8,6 +8,7 @@ loopback so the chat command still exists. Loopback never marks a table booked.
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -57,6 +58,8 @@ class ReservationRequest:
     destination_phone: str
     chat_id: str = ""
     raw_text: str = ""
+    contact_note: str = ""
+    call_task: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,9 @@ class CallResult:
     confirmation_id: str | None = None
     notes: str = ""
     spoken: str = ""
+    call_id: str | None = None
+    provider_status: str | None = None
+    prepared_call: dict | None = None
 
     def __post_init__(self):
         if self.status not in STATUSES:
@@ -77,6 +83,10 @@ class CallResult:
 
 
 _DIRECT_CALL = re.compile(r"\b(?:call|phone|dial)\b", re.I)
+_DIRECT_COMMAND = re.compile(
+    r"^\s*(?:(?:please|can you|could you|would you|will you)\s+)?"
+    r"(?:call|phone|dial)\b", re.I)
+_E164_PHONE = re.compile(r"(?<![\w+])\+[1-9]\d{1,14}(?!\d)")
 
 
 def looks_like_reservation_call_request(text: str) -> bool:
@@ -88,13 +98,78 @@ def looks_like_reservation_call_request(text: str) -> bool:
 def looks_like_direct_call_request(text: str) -> bool:
     if not isinstance(text, str) or not text.strip() or _REMIND_CALL.search(text):
         return False
-    if not (_DIRECT_CALL.search(text) and normalize_phone(text)):
-        return False
-    return normalize_phone(text) == AUTHORIZED_TEST_NUMBER
+    body = _INVOKE_PREFIX.sub("", text, count=1)
+    return bool(_DIRECT_COMMAND.search(body) and (extract_phone(body) or direct_call_target(text)))
+
+
+def direct_call_target(text: str) -> str:
+    body = _INVOKE_PREFIX.sub("", text or "", count=1)
+    command = _DIRECT_COMMAND.match(body)
+    if not command:
+        return ""
+    rest = body[command.end():].strip()
+    target = re.split(r"\s+(?:(?:and|to)\s+)?(?:ask|tell|see|find out|check)\b", rest,
+                      maxsplit=1, flags=re.I)[0].strip(" ,.!?")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z'’ .-]{0,79}", target):
+        return ""
+    if target.casefold() in {"it a day", "it", "that", "this"}:
+        return ""
+    return target
+
+
+def personal_call_overrides(request, owner_name="") -> dict:
+    recipient = request.venue or "there"
+    behalf = owner_name or "your group"
+    return {
+        "firstMessage": f"Hi {recipient}, I'm calling on behalf of {behalf}. Is now a good time to talk?",
+        "firstMessageMode": "assistant-speaks-first",
+        "model": {"provider": "xai", "model": "grok-4.3", "messages": [{
+            "role": "system", "content": (
+                "Make this requested phone call on behalf of the group. Ask one question at a time. "
+                "Carry out only the conversation requested in the following JSON data. "
+                "Collect the person's answer accurately; do not invent their availability or an agreement. "
+                "Do not claim to send messages, create bookings, or change calendars. "
+                "If asked whether you are automated, answer truthfully. Respect a refusal and end politely. "
+                + json.dumps({"recipient": recipient, "request": request.call_task}, ensure_ascii=False)
+            ),
+        }]},
+    }
 
 
 def looks_like_call_request(text: str) -> bool:
     return looks_like_reservation_call_request(text) or looks_like_direct_call_request(text)
+
+
+_TABLE_BOOKING = re.compile(
+    r"\b(?:book|reserve)\s+(?:a\s+)?table\b|\bmake\s+a\s+reservation\b|\breservation\s+at\b",
+    re.I,
+)
+
+
+def looks_like_restaurant_booking(text: str) -> bool:
+    """A group ask to book a restaurant, including requests that never say call."""
+    if not isinstance(text, str) or not text.strip() or _REMIND_CALL.search(text):
+        return False
+    return bool(looks_like_reservation_call_request(text) or _TABLE_BOOKING.search(text))
+
+
+def iter_phones(text: str | None) -> list[str]:
+    """Every explicit E.164 or US number in text, without inventing one."""
+    if not text:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _E164_PHONE.finditer(text):
+        number = match.group()
+        if number not in seen:
+            seen.add(number)
+            found.append(number)
+    for match in _PHONE.finditer(text):
+        number = normalize_phone(match.group(0))
+        if number and number not in seen:
+            seen.add(number)
+            found.append(number)
+    return found
 
 
 def looks_like_card_number(text: str | None) -> bool:
@@ -145,6 +220,14 @@ def normalize_phone(text: str | None) -> str:
     return f"+1{area}{rest}"
 
 
+def extract_phone(text: str | None) -> str:
+    """Accept explicit E.164 worldwide or an unambiguous US ten-digit number."""
+    if not text:
+        return ""
+    match = _E164_PHONE.search(text)
+    return match.group() if match else normalize_phone(text)
+
+
 def parse_reservation_call(
     text: str,
     *,
@@ -188,9 +271,7 @@ def parse_reservation_call(
         people = [p for p in (getattr(facts, "participants", None) or []) if p]
         if people:
             name = people[0]
-    destination = normalize_phone(body)
-    if destination != AUTHORIZED_TEST_NUMBER:
-        destination = ""
+    destination = extract_phone(body)
     direct_only = bool(destination) and not _CALL_BOOK.search(body)
     return ReservationRequest(
         venue="" if direct_only else (venue or "the restaurant"),
@@ -291,7 +372,11 @@ def finalize_result(result: CallResult) -> CallResult:
 
 
 def format_call_status(result: CallResult) -> str:
+    if result.transport == "contact":
+        return result.notes or "What phone number should I call? I haven't placed a call."
     result = finalize_result(result)
+    if result.transport == "restaurant":
+        return result.notes or "nothing is booked."
     venue = result.venue or "the restaurant"
     when = f" at {result.time}" if result.time else ""
     party = f" for {result.party_size}" if result.party_size else ""
@@ -302,6 +387,13 @@ def format_call_status(result: CallResult) -> str:
                     "nothing is booked.")
         extra = result.notes or "Phone.app did not start a call"
         return f"failed — {extra}. nothing is booked."
+    if result.transport == "vapi":
+        if result.dialed:
+            who = result.venue.strip() if result.venue else ""
+            if who:
+                return f"call started — calling {who}. i'll report when it ends."
+            return "call started — i'll report when it ends."
+        return f"call not confirmed — {result.notes or 'Vapi call did not start'}."
     if result.status == "booked" and result.dialed and result.confirmation_id:
         return (f"booked {venue}{party}{when}. confirmation {result.confirmation_id}.")
     if result.status == "waiting_for_human":
@@ -330,6 +422,12 @@ class ReservationCaller:
         last_result_hook: Callable[[CallResult], None] | None = None,
         continuity=None,
         voice=None,
+        vapi=None,
+        owner_name: str = "",
+        phone_lookup=None,
+        dry_run: bool = False,
+        snapshots=None,
+        contact_lookup=None,
     ):
         self.plan_store = plan_store
         self.dialer = dialer
@@ -340,6 +438,13 @@ class ReservationCaller:
         self.last_result_hook = last_result_hook
         self.continuity = continuity
         self.voice = voice
+        self.vapi = vapi
+        self.owner_name = owner_name or ""
+        self.phone_lookup = phone_lookup
+        self.dry_run = bool(dry_run)
+        self.snapshots = snapshots
+        self.contact_lookup = contact_lookup
+        self._memory_snapshots = None
         self.last_result: CallResult | None = None
         self.last_request: ReservationRequest | None = None
         self._briefs: dict[str, ReservationRequest] = {}
@@ -373,16 +478,52 @@ class ReservationCaller:
                     proposal = self.plan_store.latest_proposal(plan.id)
                 except Exception:
                     proposal = None
-        return parse_reservation_call(
+        request = parse_reservation_call(
             text, plan=plan, proposal=proposal,
             callback_number=self.callback_number, guest_name=self.guest_name,
             chat_id=chat_id)
+        if looks_like_direct_call_request(text) and not looks_like_restaurant_booking(text):
+            body = _INVOKE_PREFIX.sub("", text or "", count=1)
+            task = re.search(r"\b(?:ask|tell|see|find out|check)\b.*", body, re.I)
+            target = direct_call_target(text)
+            request = replace(request, venue=target, call_task=task.group(0)[:1000] if task else "")
+            if not request.destination_phone:
+                try:
+                    number = self.contact_lookup(target) if self.contact_lookup else ""
+                except ValueError as exc:
+                    request = replace(request, contact_note=str(exc))
+                except Exception:
+                    request = replace(request, contact_note="Local contacts are unavailable; what phone number should I call?")
+                else:
+                    phone = extract_phone(number)
+                    request = replace(request, destination_phone=phone,
+                                      contact_note="" if phone else f"What phone number should I call for {target}? I haven't placed a call.")
+        return request
 
-    def run(self, text: str, *, chat_id: str = "") -> CallResult:
-        request = self.parse(text, chat_id=chat_id)
+    def run(self, text: str, *, chat_id: str = "", parsed_request=None) -> CallResult:
+        request = parsed_request if parsed_request is not None else self.parse(text, chat_id=chat_id)
         self.last_request = request
         self._briefs[chat_id or request.venue] = request
-        if self.can_dial_pstn(request):
+        if looks_like_restaurant_booking(text):
+            from app.voice.restaurant import advance_restaurant_request
+            result = advance_restaurant_request(
+                self, text, chat_id=chat_id, message_id="")
+            if result is None:
+                result = CallResult(
+                    status="need_confirm", transport="restaurant", dialed=False,
+                    venue=request.venue, notes="nothing is booked.")
+            result = finalize_result(result)
+            self.last_result = result
+            if self.last_result_hook:
+                self.last_result_hook(result)
+            return result
+        if looks_like_direct_call_request(text) and not request.destination_phone:
+            result = CallResult(status="waiting_for_human", transport="contact", dialed=False,
+                                venue=request.venue, notes=request.contact_note)
+        elif self.vapi is not None and request.destination_phone:
+            overrides = personal_call_overrides(request, self.owner_name) if request.call_task else None
+            result = self._dial_vapi(request, assistant_overrides=overrides)
+        elif self.can_dial_pstn(request):
             result = self._dial(request)
         elif self.can_dial_continuity(request):
             result = self._dial_continuity(request)
@@ -395,7 +536,7 @@ class ReservationCaller:
                 time=request.time,
                 notes="no Continuity dialer or number not allowlisted",
             )
-        elif _DIRECT_CALL.search(text) and normalize_phone(text):
+        elif _DIRECT_CALL.search(text) and extract_phone(text):
             result = CallResult(
                 status="failed", transport="continuity", dialed=False,
                 venue=request.venue, party_size=request.party_size,
@@ -441,6 +582,31 @@ class ReservationCaller:
             time=request.time,
             notes="call placed; waiting for the restaurant to confirm",
         )
+
+    def _dial_vapi(self, request: ReservationRequest, *,
+                   assistant_overrides: dict | None = None) -> CallResult:
+        allows = getattr(self.vapi, "allows", lambda _: True)
+        if not allows(request.destination_phone):
+            return CallResult(status="failed", transport="vapi", dialed=False,
+                              venue=request.venue, notes="number is not allowlisted for Vapi")
+        if not self.vapi.ready():
+            return CallResult(status="failed", transport="vapi", dialed=False,
+                              venue=request.venue, notes="Vapi is not configured")
+        try:
+            payload = {"to_number": request.destination_phone}
+            if assistant_overrides:
+                payload["assistant_overrides"] = assistant_overrides
+            placed = self.vapi.place_call(**payload)
+        except Exception as exc:
+            from app.voice.vapi import VapiError
+            note = (str(exc) if isinstance(exc, VapiError) else
+                    "Vapi call outcome is unknown; check the dashboard before another attempt")
+            return CallResult(status="failed", transport="vapi", dialed=False,
+                              venue=request.venue, notes=note)
+        return CallResult(status="need_confirm", transport="vapi", dialed=True,
+                          venue=request.venue,
+                          notes="i'll report when it ends",
+                          call_id=placed["id"], provider_status=placed["status"])
 
     def _dial_continuity(self, request: ReservationRequest) -> CallResult:
         from app.voice.pipeline import run_mac_phone_call
